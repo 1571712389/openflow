@@ -10,6 +10,8 @@ import { handleStatus } from './commands/status.js'
 import { handleConfig } from './commands/config-cmd.js'
 import { createChatMessageHook } from './hooks/chat-message.js'
 import { createToolAfterHook } from './hooks/tool-after.js'
+import { createAcceptanceHook } from './hooks/acceptance.js'
+import { createAcceptancePromptHook } from './hooks/acceptance-prompt.js'
 
 type OpenFlowContext = BaseOpenFlowContext & PluginInput
 
