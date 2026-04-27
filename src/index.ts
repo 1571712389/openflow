@@ -5,7 +5,7 @@ import { cleanupLegacyCommandArtifacts } from './command-registration.js'
 import { loadConfig } from './config.js'
 import { registerSkills } from './skills/registration.js'
 import { logger, OpenFlowError } from './utils/index.js'
-import { handleArchive, handleBrainstorm, handleInit, handleStatus, handleConfig, handleVerify } from './commands/index.js'
+import { handleArchive, handleBrainstorm, handleInit, handleStatus, handleConfig, handleVerify, handleMigrateDocs } from './commands/index.js'
 import { createChatMessageHook } from './hooks/chat-message.js'
 import { createToolBeforeHook } from './hooks/tool-before.js'
 import { createToolAfterHook } from './hooks/tool-after.js'
@@ -138,6 +138,25 @@ export const OpenFlowPlugin: OpenCodePlugin = async (ctx: PluginInput) => {
           void toolContext
           try {
             return await handleVerify(openflowCtx, args.feature)
+          } catch (error) {
+            if (error instanceof OpenFlowError) {
+              return error.toUserMessage()
+            }
+            return `Error: ${error instanceof Error ? error.message : String(error)}`
+          }
+        },
+      }),
+      'openflow/migrate-docs': tool({
+        description: 'Migrate documentation from other workflow tools into OpenFlow docs structure',
+        args: {
+          sourceDir: tool.schema.string().optional(),
+          targetDir: tool.schema.string().optional(),
+          dryRun: tool.schema.boolean().optional(),
+          answer: tool.schema.string().optional(),
+        },
+        execute: async (args: { sourceDir?: string; targetDir?: string; dryRun?: boolean; answer?: string }) => {
+          try {
+            return await handleMigrateDocs(openflowCtx, args)
           } catch (error) {
             if (error instanceof OpenFlowError) {
               return error.toUserMessage()
