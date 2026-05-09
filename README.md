@@ -204,6 +204,14 @@ OpenFlow maintains more than feature docs. It continuously maintains global fact
 - `decisions` records key architectural judgments and their rationale
 - Team changes, session loss, and context switches no longer wipe out system knowledge
 
+### 🛡️ Quality Governance, Not Last-Minute Cleanup
+OpenFlow controls code quality in two layers:
+- **Front-loaded constraints**: TDD plan enhancement is enabled by default, pushing testing and verification requirements into the implementation plan
+- **Post-implementation hardening**: complex changes can run through `harden`, where reviewer / executor rounds repeatedly challenge design alignment, regression risk, and missing validation
+- **Final gate**: even after implementation, `verify` still requires evidence and readiness before the change can count as complete
+
+That means quality is not something checked casually at the end. It is constrained before implementation, during implementation, and after implementation
+
 ### 🔍 Real-Time Drift Detection
 OpenFlow monitors your workspace in real-time. If AI deviates from the approved `design.md`:
 - Verify stage immediately flags the drift
