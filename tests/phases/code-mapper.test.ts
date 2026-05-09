@@ -44,7 +44,7 @@ describe('code-mapper', () => {
     expect(entries[0].step).toBe('Archive command traces requirements to code')
     expect(entries[0].symbol).toContain('archiveTraceability')
     expect(entries[0].symbol).toContain('mapRequirements')
-    expect(entries[0].verificationEvidence).toBe('archived file-change evidence recorded')
+    expect(entries[0].verificationEvidence).toBe('no verification evidence recorded')
 
     await rm(testDir, { recursive: true, force: true })
   })
@@ -72,6 +72,71 @@ describe('code-mapper', () => {
 
     expect(traceability.usedDesignFallback).toBe(true)
     expect(traceability.items[0]?.item).toBe('Use design doc fallback for archive traceability')
+
+    await rm(testDir, { recursive: true, force: true })
+  })
+
+  test('collectTraceabilityItems should prefer design.meta.json when present', async () => {
+    const testDir = join(process.cwd(), '.test-code-mapper-sidecar-traceability')
+    await rm(testDir, { recursive: true, force: true })
+    await mkdir(join(testDir, 'docs', 'changes', 'sidecar'), { recursive: true })
+
+    await writeFile(
+      join(testDir, 'docs', 'changes', 'sidecar', 'prd.md'),
+      '# Requirements\n## Acceptance Criteria\n- Markdown fallback item that should not be used first\n',
+      'utf-8'
+    )
+    await writeFile(
+      join(testDir, 'docs', 'changes', 'sidecar', 'design.meta.json'),
+      JSON.stringify({
+        feature: 'sidecar',
+        constraints: [
+          {
+            id: 'c-auth-1',
+            category: 'security',
+            severity: 'must',
+            description: 'Validate archive traceability against structured requirements',
+            rationale: 'Archive output should stay linked to approved intent',
+            verificationMethod: 'Mapper tests cover structured requirement extraction',
+            sourceQuestionId: 'constraints',
+          },
+        ],
+        scopeBoundary: {
+          inScope: ['archive traceability'],
+          outOfScope: ['runtime auth changes'],
+        },
+        acceptanceCriteria: [
+          {
+            id: 'ac-auth-1',
+            description: 'Traceability maps sidecar acceptance criteria to code evidence',
+          },
+        ],
+        goals: ['Prefer structured sidecar requirements over markdown bullets'],
+        nonGoals: ['Changing archive filenames'],
+      }),
+      'utf-8'
+    )
+
+    const traceability = await collectTraceabilityItems(
+      testDir,
+      join(testDir, 'docs', 'changes', 'sidecar', 'prd.md'),
+      undefined
+    )
+
+    expect(traceability.usedDesignFallback).toBe(false)
+    expect(traceability.items).toHaveLength(3)
+    expect(traceability.items.map(item => item.source)).toEqual([
+      'requirement-model',
+      'requirement-model',
+      'requirement-model',
+    ])
+    expect(traceability.items.map(item => item.id)).toEqual(['goal-1', 'c-auth-1', 'ac-auth-1'])
+    expect(traceability.items.map(item => item.item)).toEqual([
+      'Prefer structured sidecar requirements over markdown bullets',
+      'Validate archive traceability against structured requirements',
+      'Traceability maps sidecar acceptance criteria to code evidence',
+    ])
+    expect(traceability.items[0]?.sourceLabel).toContain('prd.md → Goals (goal-1)')
 
     await rm(testDir, { recursive: true, force: true })
   })
