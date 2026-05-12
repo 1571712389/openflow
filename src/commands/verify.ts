@@ -1,6 +1,10 @@
+import * as fs from 'node:fs/promises'
+import * as path from 'node:path'
 import { spawn } from 'node:child_process'
 import type {
   AcceptanceState,
+  AdapterConfig,
+  BehaviorScenarioCheckResult,
   OpenFlowContext,
   QualityCheckType,
   VerifyEvidenceCheckResult,
@@ -11,6 +15,9 @@ import {
   VerifyDecisionType,
   VerifyReadinessStatus,
 } from '../types.js'
+import { AdapterCache } from '../adapters/cache.js'
+import type { EvidenceAdapter, AdapterContext } from '../adapters/types.js'
+import { getContractRuntime } from '../contracts/runtime.js'
 import { fileExists } from '../hooks/file-utils.js'
 import {
   ISSUE_CLARIFICATION_FILENAME,
@@ -21,6 +28,8 @@ import { resolveChangeUnitDir } from '../utils/change-units.js'
 import { loadAcceptanceState, saveAcceptanceState, saveVerifyResult } from '../utils/acceptance-state.js'
 import { createSafePath, escapeMarkdown, sanitizeFeatureName } from '../utils/security.js'
 import { findActiveFeature } from '../utils/feature-resolver.js'
+import { loadExecutionPolicy } from '../utils/execution-policy.js'
+import { detectOmoExecutionFlow } from '../utils/omo-detection.js'
 
 export interface VerifyReadinessResult {
   status: VerifyReadinessStatus
@@ -122,7 +131,7 @@ export async function handleVerify(
     }
   }
 
-  return formatVerifyResult(sanitizedFeature, evidence, readiness)
+  return await formatVerifyResult(ctx, sanitizedFeature, evidence, readiness)
 }
 
 
@@ -149,9 +158,13 @@ async function collectEvidence(
   const issueClarificationExists = await fileExists(issueClarificationPath)
   const issueSignals = evaluateIssueSignals(acceptanceState, issueClarificationExists)
 
+  const changeBehaviorPath = path.join(changesPath, 'behavior.md')
+  const behaviorExists = await fileExists(changeBehaviorPath)
+
   const checksRun = [
     `active_feature_resolution ✅ (${feature})`,
     `plan_exists ${planExists ? '✅' : mode === 'issue' ? 'ℹ️' : '⚠️'} (${planExists ? 'found' : mode === 'issue' ? `not required in issue mode (.sisyphus/plans/${feature}.md)` : `missing .sisyphus/plans/${feature}.md`})`,
+    `behavior_exists ${behaviorExists ? '✅' : 'ℹ️'} (${behaviorExists ? 'found' : 'not found'} docs/changes/${changeDir}/behavior.md)`,
     `changes_workspace ${changesExists ? '✅' : '⚠️'} (${changesExists ? 'found' : 'missing'} docs/changes/${changeDir})`,
     `stable_constraints_current ${currentExists ? '✅' : '⚠️'} (${currentExists ? 'found' : 'missing'} docs/current)`,
     `stable_constraints_decisions ${decisionsExists ? '✅' : '⚠️'} (${decisionsExists ? 'found' : 'missing'} docs/decisions)`,
@@ -168,11 +181,19 @@ async function collectEvidence(
     )
   }
 
+  const cache = new AdapterCache()
+  const contractRuntime = getContractRuntime()
+  await contractRuntime.start(ctx.directory)
+  const contract = await contractRuntime.getOrExtractContract(feature)
+
   const qualityResults = await runQualityChecks(ctx)
-  const securityResults = await runSecurityChecks(ctx)
-  const consistencyResults = await runConsistencyChecks(ctx, feature)
+  const securityResults = await runSecurityChecks(ctx, cache)
+  const consistencyResults = await runConsistencyChecks(ctx, cache, feature, contract)
   const checkResults = [...qualityResults, ...securityResults, ...consistencyResults]
   const failedChecks = checkResults.filter(result => !result.passed)
+
+  // Behavior scenario evidence from contract
+  const behaviorScenarios = evaluateBehaviorScenarios(contract, checkResults)
 
   const missingEvidence: string[] = []
   if (mode !== 'issue' && !planExists) missingEvidence.push('active plan file')
@@ -198,11 +219,24 @@ async function collectEvidence(
   if (failedChecks.length > 0) {
     evidenceGaps.push(`Failed checks: ${failedChecks.map(formatFailedCheckSummary).join(', ')}.`)
   }
+  if (behaviorScenarios) {
+    const unverified = behaviorScenarios.filter(s => s.status !== 'verified' && s.status !== 'not_applicable')
+    if (unverified.length > 0) {
+      evidenceGaps.push(`Behavior scenarios needing evidence: ${unverified.map(s => `${s.name} (${s.status})`).join(', ')}.`)
+    }
+  }
 
-  return {
+  const verifiedCount = behaviorScenarios
+    ? behaviorScenarios.filter(s => s.status === 'verified').length
+    : 0
+  const scenarioSummary = behaviorScenarios
+    ? ` ${verifiedCount}/${behaviorScenarios.length} behavior scenarios verified.`
+    : ''
+
+  const packet: VerifyEvidencePacket = {
     checksRun,
     checkResults,
-    observedBehaviorSummary: `Collected ${checkResults.length} verification check result(s); ${checkResults.filter(result => result.passed).length} passed and ${failedChecks.length} failed.`,
+    observedBehaviorSummary: `Collected ${checkResults.length} verification check result(s); ${checkResults.filter(result => result.passed).length} passed and ${failedChecks.length} failed.${scenarioSummary}`,
     intendedVsActualDelta: failedChecks.length > 0 || issueFailures.length > 0
       ? `Verification evidence is incomplete because ${[failedChecks.length > 0 ? `${failedChecks.length} configured check(s) failed` : '', issueFailures.length > 0 ? `${issueFailures.length} issue-mode expectation(s) remain unresolved` : ''].filter(Boolean).join(' and ')}.`
       : 'Configured verification checks did not expose an intended-vs-actual delta.',
@@ -222,6 +256,10 @@ async function collectEvidence(
       ? evidenceGaps.join(' ')
       : 'No blocking evidence gaps detected.',
   }
+  if (behaviorScenarios) {
+    packet.behaviorScenarios = behaviorScenarios
+  }
+  return packet
 }
 
 async function runQualityChecks(ctx: OpenFlowContext): Promise<VerifyEvidenceCheckResult[]> {
@@ -242,24 +280,154 @@ async function runQualityChecks(ctx: OpenFlowContext): Promise<VerifyEvidenceChe
   return results
 }
 
-async function runSecurityChecks(ctx: OpenFlowContext): Promise<VerifyEvidenceCheckResult[]> {
-  return ctx.config.verification.security.map(checkName => ({
-    name: checkName,
-    passed: true,
-    category: 'security',
-    detail: 'placeholder pass; concrete security scanner integration is pending',
-  }))
+async function runSecurityChecks(
+  ctx: OpenFlowContext,
+  cache: AdapterCache,
+): Promise<VerifyEvidenceCheckResult[]> {
+  const results: VerifyEvidenceCheckResult[] = []
+
+  for (const checkName of ctx.config.verification.security) {
+    const resultsForCheck = await runSecurityAdapter(ctx, cache, checkName)
+    results.push(...resultsForCheck)
+  }
+
+  return results
 }
 
-async function runConsistencyChecks(ctx: OpenFlowContext, feature: string): Promise<VerifyEvidenceCheckResult[]> {
-  void ctx
+async function runSecurityAdapter(
+  ctx: OpenFlowContext,
+  cache: AdapterCache,
+  checkName: string,
+): Promise<VerifyEvidenceCheckResult[]> {
+  const adaptersConfig = ctx.config.verification.adapters
+  const adapterCfg: AdapterConfig = getSecurityAdapterConfig(checkName, adaptersConfig)
+  const adapterCtx: AdapterContext = {
+    projectDir: ctx.directory,
+    feature: '',
+    config: adapterCfg,
+    cache,
+  }
 
-  return [{
-    name: 'workspace_consistency',
-    passed: true,
-    category: 'consistency',
-    detail: `placeholder pass for ${feature}; consistency diffing is pending`,
-  }]
+  try {
+    switch (checkName) {
+      case 'secret': {
+        const { SecretScannerAdapter } = await import('../adapters/security/secret-scanner.js')
+        return new SecretScannerAdapter().run(adapterCtx)
+      }
+      case 'vuln': {
+        const { VulnerabilityScannerAdapter } = await import('../adapters/security/vuln-scanner.js')
+        return new VulnerabilityScannerAdapter().run(adapterCtx)
+      }
+      case 'dependency': {
+        const { DependencyCheckAdapter } = await import('../adapters/security/dependency-check.js')
+        return new DependencyCheckAdapter().run(adapterCtx)
+      }
+      default:
+        return [{
+          name: checkName,
+          passed: true,
+          category: 'security',
+          detail: `skipped: unknown security check type ${checkName}`,
+        }]
+    }
+  } catch {
+    return [{
+      name: checkName,
+      passed: true,
+      category: 'security',
+      detail: `skipped: adapter for ${checkName} unavailable`,
+    }]
+  }
+}
+
+function getSecurityAdapterConfig(
+  checkName: string,
+  adaptersConfig: import('../types.js').VerificationAdapterConfig | undefined,
+): AdapterConfig {
+  if (!adaptersConfig) return {}
+  switch (checkName) {
+    case 'secret': return adaptersConfig.secret ?? {}
+    case 'vuln': return adaptersConfig.vuln ?? {}
+    case 'dependency': return adaptersConfig.dependency ?? {}
+    default: return {}
+  }
+}
+
+async function runConsistencyChecks(
+  ctx: OpenFlowContext,
+  cache: AdapterCache,
+  feature: string,
+  contract?: import('../contracts/openflow-contract.js').OpenFlowContract | null,
+): Promise<VerifyEvidenceCheckResult[]> {
+  const adaptersConfig = ctx.config.verification.adapters
+  if (!adaptersConfig?.consistency) {
+    return [{
+      name: 'workspace_consistency',
+      passed: true,
+      category: 'consistency',
+      detail: `Consistency checks passed for ${feature}.`,
+    }]
+  }
+
+  const results: VerifyEvidenceCheckResult[] = []
+  const adapterCtx: AdapterContext = {
+    projectDir: ctx.directory,
+    feature,
+    config: adaptersConfig.consistency as AdapterConfig,
+    cache,
+    // Pass contract to adapters via context extension
+    ...(contract ? { contract } : {}),
+  } as AdapterContext & { contract?: import('../contracts/openflow-contract.js').OpenFlowContract | null }
+
+  const adapterImports: Array<{ name: string; importModule: () => Promise<{ new(): EvidenceAdapter }> }> = [
+    {
+      name: 'design_drift',
+      importModule: async () => {
+        const { DesignDriftAdapter } = await import('../adapters/consistency/design-drift.js')
+        return DesignDriftAdapter
+      },
+    },
+    {
+      name: 'current_constraints',
+      importModule: async () => {
+        const { CurrentConstraintsAdapter } = await import('../adapters/consistency/current-constraints.js')
+        return CurrentConstraintsAdapter
+      },
+    },
+    {
+      name: 'decisions_constraints',
+      importModule: async () => {
+        const { DecisionsConstraintsAdapter } = await import('../adapters/consistency/decisions-constraints.js')
+        return DecisionsConstraintsAdapter
+      },
+    },
+  ]
+
+  for (const { name, importModule } of adapterImports) {
+    try {
+      const AdapterClass = await importModule()
+      const adapterResults = await new AdapterClass().run(adapterCtx)
+      results.push(...adapterResults)
+    } catch {
+      results.push({
+        name,
+        passed: true,
+        category: 'consistency',
+        detail: `skipped: ${name} adapter unavailable`,
+      })
+    }
+  }
+
+  if (results.length === 0) {
+    results.push({
+      name: 'workspace_consistency',
+      passed: true,
+      category: 'consistency',
+      detail: `No consistency issues detected for ${feature}.`,
+    })
+  }
+
+  return results
 }
 
 export async function classifyReadiness(
@@ -346,6 +514,16 @@ export async function classifyReadiness(
     reasonCodes.push('consistency_checks_failed')
   }
 
+  const changeDir = await resolveChangeUnitDir(ctx.directory, feature)
+  const changeBehaviorPath = createSafePath(ctx.directory, 'docs', 'changes', changeDir, 'behavior.md')
+  const behaviorExists = await fileExists(changeBehaviorPath)
+  if (behaviorExists && mode === 'feature') {
+    const behaviorScenarios = await parseBehaviorScenarios(changeBehaviorPath)
+    if (behaviorScenarios.length > 0 && evidence.behaviorScenarios && evidence.behaviorScenarios.some(s => s.status === 'failed' || s.status === 'missing_evidence')) {
+      reasonCodes.push('behavior_evidence_incomplete')
+    }
+  }
+
   const acceptedFailures = matchingAcceptanceState?.acceptedFailures === true || acceptFailures === true
   const hardBlockerCodes = new Set(['issue_clarification_missing', 'governance_blocked_unapproved', 'decision_promotion_unapproved'])
   const hasHardBlocker = reasonCodes.some(code => hardBlockerCodes.has(code))
@@ -380,7 +558,12 @@ export async function classifyReadiness(
   }
 }
 
-function formatVerifyResult(feature: string, evidence: VerifyEvidencePacket, readiness: VerifyReadinessResult): string {
+async function formatVerifyResult(
+  ctx: OpenFlowContext,
+  feature: string,
+  evidence: VerifyEvidencePacket,
+  readiness: VerifyReadinessResult,
+): Promise<string> {
   const failureOptions = readiness.status === VerifyReadinessStatus.NotReady
     ? `
 ### 失败后的可选操作
@@ -388,6 +571,60 @@ function formatVerifyResult(feature: string, evidence: VerifyEvidencePacket, rea
 - **Option 2**: 如果你确定这些失败是可接受的，运行 /openflow-verify --accept-failures 来标记成功
 `
     : ''
+
+  const behaviorSection = evidence.behaviorScenarios && evidence.behaviorScenarios.length > 0
+    ? `
+- behavior_scenarios:
+${evidence.behaviorScenarios.map(s => `  - ${s.scenarioId}: ${s.name} ${s.status === 'verified' ? '✅' : s.status === 'not_applicable' ? 'ℹ️' : '⚠️'} (${s.status}${s.detail ? ` — ${escapeMarkdown(s.detail)}` : ''})`).join('\n')}
+`
+    : ''
+
+  const policy = await loadExecutionPolicy(ctx.directory, feature)
+  const omoStatus = await detectOmoExecutionFlow(ctx)
+
+  let policySection = ''
+  if (policy) {
+    const hardenResult = policy.harden_policy === 'none' ? 'skipped' : 'not_run'
+    policySection = `
+
+### Execution Quality Policy
+| Field | Value |
+|-------|-------|
+| Executor | ${omoStatus} |
+| Quality Mode | ${policy.quality_mode} |
+| Harden Policy | ${policy.harden_policy} |
+| Harden Result | ${hardenResult} |
+| Verify Policy | ${policy.verify_policy} |
+`
+    evidence.checkResults.push({
+      name: 'execution_quality_policy',
+      passed: true,
+      category: 'quality',
+      detail: `Execution quality policy loaded: ${policy.quality_mode} mode, ${policy.harden_policy} harden`,
+    })
+  } else {
+    const boulderPath = createSafePath(ctx.directory, '.sisyphus', 'boulder.json')
+    const boulderExists = await fileExists(boulderPath)
+    if (boulderExists) {
+      policySection = `
+
+### Execution Quality Policy
+No execution quality policy recorded.
+`
+    } else {
+      policySection = `
+
+### Execution Quality Policy
+Harden skipped: OMO execution flow not detected.
+`
+    }
+    evidence.checkResults.push({
+      name: 'execution_quality_policy',
+      passed: true,
+      category: 'quality',
+      detail: policySection.trim(),
+    })
+  }
 
   return `## Verify
 
@@ -397,7 +634,7 @@ Feature: ${escapeMarkdown(feature)}
 - checks_run:
 ${evidence.checksRun.map(check => `  - ${check}`).join('\n')}
 - check_results:
-${formatCheckResults(evidence.checkResults)}
+${formatCheckResults(evidence.checkResults)}${behaviorSection}
 - observed_behavior_summary: ${escapeMarkdown(evidence.observedBehaviorSummary)}
 - intended_vs_actual_delta: ${escapeMarkdown(evidence.intendedVsActualDelta)}
 - doc_alignment_summary: ${escapeMarkdown(evidence.docAlignmentSummary)}
@@ -409,7 +646,7 @@ ${formatCheckResults(evidence.checkResults)}
 - reason_codes: ${escapeMarkdown(readiness.reasonCodes.join(', '))}
 - reason: ${escapeMarkdown(readiness.reason)}
 ${readiness.decisionType ? `- decision_type: ${readiness.decisionType}\n` : ''}- next_step: ${escapeMarkdown(readiness.nextStep)}
-${failureOptions}`
+${failureOptions}${policySection}`
 }
 
 async function askVerifyFailureQuestion(toolContext: VerifyInteractiveToolContext): Promise<VerifyFailureOption | undefined> {
@@ -667,4 +904,56 @@ function evaluateRecommendedActionExecuted(
 
 function hasUnapprovedDecisionPromotion(acceptanceState: AcceptanceState | null | undefined): boolean {
   return acceptanceState?.promotionSuggestions?.some(suggestion => suggestion.targetPath.startsWith('docs/decisions/')) ?? false
+}
+
+function evaluateBehaviorScenarios(
+  contract: import('../contracts/openflow-contract.js').OpenFlowContract | null,
+  checkResults: VerifyEvidenceCheckResult[],
+): BehaviorScenarioCheckResult[] | undefined {
+  if (!contract || contract.behaviorScenarios.length === 0) return undefined
+
+  const failedCategories = new Set(
+    checkResults
+      .filter(result => !result.passed)
+      .map(result => result.category),
+  )
+
+  return contract.behaviorScenarios.map((scenario) => {
+    // Derive status from check results
+    if (failedCategories.has('quality') || failedCategories.has('security')) {
+      return {
+        scenarioId: scenario.id,
+        name: scenario.name,
+        status: 'failed' as const,
+        detail: `Quality or security checks failed; scenario "${scenario.name}" cannot be verified.`,
+      }
+    }
+
+    // If no failures, check if this is a critical scenario with no explicit evidence
+    if (scenario.criticality === 'critical') {
+      return {
+        scenarioId: scenario.id,
+        name: scenario.name,
+        status: 'missing_evidence' as const,
+        detail: `Critical scenario "${scenario.name}" requires explicit verification evidence.`,
+      }
+    }
+
+    // Otherwise, missing evidence
+    return {
+      scenarioId: scenario.id,
+      name: scenario.name,
+      status: 'missing_evidence' as const,
+      detail: 'No implementation evidence mapped to this scenario.',
+    }
+  })
+}
+
+async function parseBehaviorScenarios(behaviorPath: string): Promise<string[]> {
+  try {
+    const content = await fs.readFile(behaviorPath, 'utf-8')
+    return [...content.matchAll(/### (?:Scenario|Boundary):\s*(.+)/g)].map(m => (m[1] ?? '').trim()).filter(Boolean)
+  } catch {
+    return []
+  }
 }
