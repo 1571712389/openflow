@@ -21,6 +21,7 @@ export interface ImplementationMapperOptions {
   driftItems?: DriftItem[]
   issueClarificationPath?: string | null
   promotionCandidatePath?: string | null
+  behaviorPath?: string | null
 }
 
 export async function generateImplementationMapper(options: ImplementationMapperOptions): Promise<string> {

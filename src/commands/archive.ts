@@ -135,6 +135,12 @@ export async function handleArchive(ctx: OpenFlowContext, feature?: string): Pro
     trackArchivedChangeWorkspaceSource(archivedChangeWorkspaceSources, sourceChangeWorkspacePath, sourceRequirementsPath)
   }
 
+  const sourceBehaviorPath = path.join(sourceChangeWorkspacePath, 'behavior.md')
+  if (await fileExists(sourceBehaviorPath)) {
+    await fs.copyFile(sourceBehaviorPath, path.join(archiveDir, 'behavior.md'))
+    trackArchivedChangeWorkspaceSource(archivedChangeWorkspaceSources, sourceChangeWorkspacePath, sourceBehaviorPath)
+  }
+
   if ((archiveMode === 'issue' || archiveMode === 'mixed') && issueClarificationSourcePath) {
     await fs.copyFile(issueClarificationSourcePath, path.join(archiveDir, ISSUE_CLARIFICATION_FILENAME))
     trackArchivedChangeWorkspaceSource(archivedChangeWorkspaceSources, sourceChangeWorkspacePath, issueClarificationSourcePath)
@@ -171,6 +177,7 @@ export async function handleArchive(ctx: OpenFlowContext, feature?: string): Pro
     ...(driftItems.length > 0 ? { driftItems } : {}),
     ...(issueClarificationSourcePath ? { issueClarificationPath: issueClarificationSourcePath } : {}),
     ...(promotionCandidateSourcePath ? { promotionCandidatePath: promotionCandidateSourcePath } : {}),
+    ...(await fileExists(sourceBehaviorPath) ? { behaviorPath: sourceBehaviorPath } : {}),
   }
   
   await generateAndSaveImplementationMapper(implementationMapperOptions)
@@ -282,6 +289,18 @@ async function cleanupArchivedChangeWorkspaceSources(changeWorkspacePath: string
         error: error instanceof Error ? error.message : String(error),
       })
     }
+  }
+
+  // Force-remove the entire change workspace directory, including any
+  // untracked files (e.g. behavior.md, leftover artifacts) that were not
+  // explicitly tracked for individual cleanup above.
+  try {
+    await fs.rm(normalizedWorkspacePath, { recursive: true, force: true })
+  } catch (error) {
+    logger.debug('Failed to force-remove change workspace directory', {
+      workspacePath: normalizedWorkspacePath,
+      error: error instanceof Error ? error.message : String(error),
+    })
   }
 }
 
@@ -764,6 +783,7 @@ function formatArchiveResult(
 - Requirements documents: ${requirementsExists ? '✅' : '❌'}
 - Plan: ${planExists ? '✅' : '❌'}
 - Implementation mapper: ✅
+- Behavior document: ✅
 - Acceptance changes: ${hasAcceptanceChanges ? '✅' : '❌'}
 - Archive mode: ${escapeMarkdown(archiveMode)}
 
