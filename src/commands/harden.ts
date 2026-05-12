@@ -630,12 +630,28 @@ function summarizeReviewOutcome(
 }
 
 function formatHardenResult(result: HardenResult): string {
+  const roundBlocks = result.rounds.length > 0
+    ? '\n\n' + result.rounds.map((round) => {
+        const findingsBlock = round.findings.length > 0
+          ? round.findings.map((f) => {
+              const files = f.files.length > 0 ? `\n  Files: ${f.files.join(', ')}` : ''
+              const evidence = f.evidence ? `\n  Evidence: ${escapeMarkdown(f.evidence.slice(0, 300))}` : ''
+              return `- [${f.level}] ${escapeMarkdown(f.description)}${files}${evidence}`
+            }).join('\n')
+          : 'No findings.'
+        const fixBlock = round.fixReport
+          ? `\n\nFix: ${escapeMarkdown(round.fixReport.slice(0, 500))}`
+          : ''
+        return `### Round ${round.round}\n${findingsBlock}${fixBlock}`
+      }).join('\n\n')
+    : ''
+
   return `## Harden Result
 
 Status: ${result.status}
 Rounds: ${result.rounds.length}
 Budget consumed: ${result.budgetConsumed}
-Summary: ${escapeMarkdown(result.summary)}`
+Summary: ${escapeMarkdown(result.summary)}${roundBlocks}`
 }
 
 function toProjectRelativePath(projectDir: string, filePath: string): string {
