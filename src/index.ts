@@ -158,11 +158,11 @@ export const OpenFlowPlugin: OpenCodePlugin = async (ctx: PluginInput) => {
           sessionID: tool.schema.string().optional(),
         },
         execute: async (args: { feature?: string; sessionID?: string }, toolContext) => {
-          void toolContext
           try {
             const gateArgs: QualityGateArgs = {}
             if (args.feature) gateArgs.feature = args.feature
-            if (args.sessionID) gateArgs.sessionID = args.sessionID
+            const resolvedSessionID = toolContext?.sessionID || args.sessionID
+            if (resolvedSessionID) gateArgs.sessionID = resolvedSessionID
             return await handleQualityGate(openflowCtx, gateArgs)
           } catch (error) {
             if (error instanceof OpenFlowError) {
