@@ -283,6 +283,153 @@ describe('handleHarden', () => {
     }
   })
 
+  test('agent prompt payload is direct reviewer content without task invocation wrapper', async () => {
+    const directory = await createGitFixture('prompt-dedup', 'complex')
+    try {
+      const capturedTexts: string[] = []
+      let createCount = 0
+      let promptCount = 0
+      const client = {
+        session: {
+          create: async () => ({ id: `harden-session-${++createCount}` }),
+          prompt: async (options: unknown) => {
+            const payload = options && typeof options === 'object' ? options as { body?: { parts?: Array<{ text?: string }> } } : {}
+            const text = payload.body?.parts?.[0]?.text
+            if (text) capturedTexts.push(text)
+            promptCount += 1
+            return {
+              data: {
+                parts: [{ type: 'text', text: 'NO_FINDINGS' }],
+                info: {
+                  tokens: {
+                    input: 100,
+                    output: 0,
+                    reasoning: 0,
+                    cache: { read: 0, write: 0 },
+                  },
+                },
+              },
+            }
+          },
+        },
+      }
+      const ctx = createContext(directory, undefined, client)
+
+      const result = await handleHarden(ctx, 'feature-a')
+
+      expect(result).toContain('Status: pass')
+      expect(promptCount).toBe(1)
+      expect(capturedTexts[0]).not.toContain('task(')
+      expect(capturedTexts[0]).not.toContain('prompt="See detailed prompt below."')
+      expect(capturedTexts[0]).toContain('You are the OpenFlow harden reviewer.')
+      expect(capturedTexts[0].match(/## Git Diff/g)?.length).toBe(1)
+    } finally {
+      await removeFixture(directory)
+    }
+  })
+
+  test('default harden scopes reviewer diff to files referenced by the feature plan', async () => {
+    const directory = await createGitFixture('scoped-diff', 'complex')
+    try {
+      await writeFile(join(directory, '.sisyphus', 'plans', 'feature-a.md'), [
+        '# Plan',
+        '- Implement harden fixture in `src/fixture.ts`.',
+      ].join('\n'), 'utf-8')
+      await writeFile(join(directory, 'src', 'unrelated.ts'), 'export const unrelated = "base"\n', 'utf-8')
+      runGit(directory, 'add', '.')
+      runGit(directory, '-c', 'user.name=OpenFlow Test', '-c', 'user.email=openflow@example.test', 'commit', '-m', 'add unrelated base')
+      await writeFile(join(directory, 'src', 'fixture.ts'), 'export const value = 3\nexport function scopedChange() { return value }\n', 'utf-8')
+      await writeFile(join(directory, 'src', 'unrelated.ts'), 'export const unrelated = "changed"\nexport function unrelatedChange() { return unrelated }\n', 'utf-8')
+
+      const capturedTexts: string[] = []
+      let createCount = 0
+      const client = {
+        session: {
+          create: async () => ({ id: `harden-session-${++createCount}` }),
+          prompt: async (options: unknown) => {
+            const payload = options && typeof options === 'object' ? options as { body?: { parts?: Array<{ text?: string }> } } : {}
+            const text = payload.body?.parts?.[0]?.text
+            if (text) capturedTexts.push(text)
+            return {
+              data: {
+                parts: [{ type: 'text', text: 'NO_FINDINGS' }],
+                info: {
+                  tokens: {
+                    input: 100,
+                    output: 0,
+                    reasoning: 0,
+                    cache: { read: 0, write: 0 },
+                  },
+                },
+              },
+            }
+          },
+        },
+      }
+      const ctx = createContext(directory, undefined, client)
+
+      const result = await handleHarden(ctx, 'feature-a')
+
+      expect(result).toContain('Status: pass')
+      expect(capturedTexts[0]).toContain('src/fixture.ts')
+      expect(capturedTexts[0]).toContain('# omitted: src/unrelated.ts')
+      expect(capturedTexts[0]).not.toContain('unrelatedChange')
+    } finally {
+      await removeFixture(directory)
+    }
+  })
+
+  test('full harden keeps unrelated diff blocks for explicit full review', async () => {
+    const directory = await createGitFixture('full-diff', 'complex')
+    try {
+      await writeFile(join(directory, '.sisyphus', 'plans', 'feature-a.md'), [
+        '# Plan',
+        '- Implement harden fixture in `src/fixture.ts`.',
+      ].join('\n'), 'utf-8')
+      await writeFile(join(directory, 'src', 'unrelated.ts'), 'export const unrelated = "base"\n', 'utf-8')
+      runGit(directory, 'add', '.')
+      runGit(directory, '-c', 'user.name=OpenFlow Test', '-c', 'user.email=openflow@example.test', 'commit', '-m', 'add unrelated base')
+      await writeFile(join(directory, 'src', 'fixture.ts'), 'export const value = 3\nexport function scopedChange() { return value }\n', 'utf-8')
+      await writeFile(join(directory, 'src', 'unrelated.ts'), 'export const unrelated = "changed"\nexport function unrelatedChange() { return unrelated }\n', 'utf-8')
+
+      const capturedTexts: string[] = []
+      let createCount = 0
+      const client = {
+        session: {
+          create: async () => ({ id: `harden-session-${++createCount}` }),
+          prompt: async (options: unknown) => {
+            const payload = options && typeof options === 'object' ? options as { body?: { parts?: Array<{ text?: string }> } } : {}
+            const text = payload.body?.parts?.[0]?.text
+            if (text) capturedTexts.push(text)
+            return {
+              data: {
+                parts: [{ type: 'text', text: 'NO_FINDINGS' }],
+                info: {
+                  tokens: {
+                    input: 100,
+                    output: 0,
+                    reasoning: 0,
+                    cache: { read: 0, write: 0 },
+                  },
+                },
+              },
+            }
+          },
+        },
+      }
+      const ctx = createContext(directory, undefined, client)
+
+      const result = await handleHarden(ctx, 'feature-a', { full: true })
+
+      expect(result).toContain('Status: pass')
+      expect(capturedTexts[0]).toContain('src/fixture.ts')
+      expect(capturedTexts[0]).toContain('src/unrelated.ts')
+      expect(capturedTexts[0]).toContain('unrelatedChange')
+    } finally {
+      await removeFixture(directory)
+    }
+  })
+
   test('design ambiguity returns needs_human', async () => {
     const directory = await createGitFixture('ambiguity', 'complex')
     try {
