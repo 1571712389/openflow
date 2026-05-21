@@ -91,26 +91,26 @@ describe('runCleanupStage', () => {
   // ==========================================================================
 
   describe('keep mode', () => {
-    it('generates migration-report.md at targetRoot', async () => {
+    it.serial('generates migration-report.md at targetRoot', async () => {
       await createSourceFile('docs/design.md', '# Design')
       await createSourceFile('docs/spec.md', '# Spec')
       const state = makeCleanupState('keep')
-
+    
       await runCleanupStage(state, '', projectDir)
-
+    
       const reportPath = path.join(targetDir, 'migration-report.md')
       const content = await fs.readFile(reportPath, 'utf-8')
       expect(content).toContain('# Migration Report')
       expect(content).toContain('**Disposal Mode:** keep')
     })
 
-    it('generates migration-manifest.json at targetRoot', async () => {
+    it.serial('generates migration-manifest.json at targetRoot', async () => {
       await createSourceFile('docs/design.md', '# Design')
       await createSourceFile('docs/spec.md', '# Spec')
       const state = makeCleanupState('keep')
-
+    
       await runCleanupStage(state, '', projectDir)
-
+    
       const manifestPath = path.join(targetDir, 'migration-manifest.json')
       const content = await fs.readFile(manifestPath, 'utf-8')
       const manifest = JSON.parse(content)
@@ -118,32 +118,32 @@ describe('runCleanupStage', () => {
       expect(manifest.result.createdCount).toBe(2)
     })
 
-    it('does NOT delete source files', async () => {
+    it.serial('does NOT delete source files', async () => {
       await createSourceFile('docs/design.md', '# Design')
       await createSourceFile('docs/spec.md', '# Spec')
       const state = makeCleanupState('keep')
-
+    
       await runCleanupStage(state, '', projectDir)
-
+    
       expect(existsSync(path.join(sourceDir, 'docs/design.md'))).toBe(true)
       expect(existsSync(path.join(sourceDir, 'docs/spec.md'))).toBe(true)
     })
 
-    it('returns state advanced to completed', async () => {
+    it.serial('returns state advanced to completed', async () => {
       await createSourceFile('docs/design.md', '# Design')
       const state = makeCleanupState('keep')
-
+    
       const result = await runCleanupStage(state, '', projectDir)
-
+    
       expect(result.state.stage).toBe('completed')
     })
 
-    it('output mentions "keep" and "report"', async () => {
+    it.serial('output mentions "keep" and "report"', async () => {
       await createSourceFile('docs/design.md', '# Design')
       const state = makeCleanupState('keep')
-
+    
       const result = await runCleanupStage(state, '', projectDir)
-
+    
       expect(result.output).toContain('keep')
       expect(result.output).toContain('report')
     })
@@ -154,57 +154,57 @@ describe('runCleanupStage', () => {
   // ==========================================================================
 
   describe('delete mode', () => {
-    it('deletes source files with exact confirmation phrase', async () => {
+    it.serial('deletes source files with exact confirmation phrase', async () => {
       await createSourceFile('docs/design.md', '# Design')
       await createSourceFile('docs/spec.md', '# Spec')
       const state = makeCleanupState('delete')
-
+    
       await runCleanupStage(state, DELETE_CONFIRMATION_PHRASE, projectDir)
-
+    
       await expect(fs.access(path.join(sourceDir, 'docs/design.md'))).rejects.toThrow()
       await expect(fs.access(path.join(sourceDir, 'docs/spec.md'))).rejects.toThrow()
     })
 
-    it('does NOT generate report in delete mode', async () => {
+    it.serial('does NOT generate report in delete mode', async () => {
       await createSourceFile('docs/design.md', '# Design')
       const state = makeCleanupState('delete', { inventory: [makeInventory(sourceDir, 'docs/design.md')] })
-
+    
       await runCleanupStage(state, DELETE_CONFIRMATION_PHRASE, projectDir)
-
+    
       await expect(fs.access(path.join(targetDir, 'migration-report.md'))).rejects.toThrow()
       await expect(fs.access(path.join(targetDir, 'migration-manifest.json'))).rejects.toThrow()
     })
 
-    it('throws error with wrong confirmation phrase', async () => {
+    it.serial('throws error with wrong confirmation phrase', async () => {
       await createSourceFile('docs/design.md', '# Design')
       const state = makeCleanupState('delete')
-
+    
       await expect(
         runCleanupStage(state, 'wrong phrase', projectDir)
       ).rejects.toThrow(OpenFlowError)
-
+    
       await expect(
         runCleanupStage(state, 'wrong phrase', projectDir)
       ).rejects.toMatchObject({ code: ErrorCode.INVALID_INPUT })
     })
 
-    it('returns state advanced to completed', async () => {
+    it.serial('returns state advanced to completed', async () => {
       await createSourceFile('docs/design.md', '# Design')
       const state = makeCleanupState('delete', { inventory: [makeInventory(sourceDir, 'docs/design.md')] })
-
+    
       const result = await runCleanupStage(state, DELETE_CONFIRMATION_PHRASE, projectDir)
-
+    
       expect(result.state.stage).toBe('completed')
     })
 
-    it('does not delete source files when confirmation is wrong', async () => {
+    it.serial('does not delete source files when confirmation is wrong', async () => {
       await createSourceFile('docs/design.md', '# Design')
       const state = makeCleanupState('delete')
-
+    
       await expect(
         runCleanupStage(state, 'wrong', projectDir)
       ).rejects.toThrow()
-
+    
       // File should still exist
       expect(existsSync(path.join(sourceDir, 'docs/design.md'))).toBe(true)
     })
@@ -215,13 +215,13 @@ describe('runCleanupStage', () => {
   // ==========================================================================
 
   describe('move-to-references mode', () => {
-    it('moves source files to docs/references/raw/ in target', async () => {
+    it.serial('moves source files to docs/references/raw/ in target', async () => {
       await createSourceFile('docs/design.md', '# Design')
       await createSourceFile('docs/spec.md', '# Spec')
       const state = makeCleanupState('move-to-references')
-
+    
       await runCleanupStage(state, '', projectDir)
-
+    
       // Files should be moved to target/docs/references/raw/
       const movedDesign = path.join(targetDir, 'docs', 'references', 'raw', 'design.md')
       const movedSpec = path.join(targetDir, 'docs', 'references', 'raw', 'spec.md')
@@ -231,41 +231,41 @@ describe('runCleanupStage', () => {
       expect(specContent).toBe('# Spec')
     })
 
-    it('removes source files after move', async () => {
+    it.serial('removes source files after move', async () => {
       await createSourceFile('docs/design.md', '# Design')
       const state = makeCleanupState('move-to-references', { inventory: [makeInventory(sourceDir, 'docs/design.md')] })
-
+    
       await runCleanupStage(state, '', projectDir)
-
+    
       await expect(fs.access(path.join(sourceDir, 'docs/design.md'))).rejects.toThrow()
     })
 
-    it('generates report and manifest', async () => {
+    it.serial('generates report and manifest', async () => {
       await createSourceFile('docs/design.md', '# Design')
       const state = makeCleanupState('move-to-references', { inventory: [makeInventory(sourceDir, 'docs/design.md')] })
-
+    
       await runCleanupStage(state, '', projectDir)
-
+    
       expect(existsSync(path.join(targetDir, 'migration-report.md'))).toBe(true)
       expect(existsSync(path.join(targetDir, 'migration-manifest.json'))).toBe(true)
     })
 
-    it('returns state advanced to completed', async () => {
+    it.serial('returns state advanced to completed', async () => {
       await createSourceFile('docs/design.md', '# Design')
       const state = makeCleanupState('move-to-references', { inventory: [makeInventory(sourceDir, 'docs/design.md')] })
-
+    
       const result = await runCleanupStage(state, '', projectDir)
-
+    
       expect(result.state.stage).toBe('completed')
     })
 
-    it('output mentions moved files count', async () => {
+    it.serial('output mentions moved files count', async () => {
       await createSourceFile('docs/design.md', '# Design')
       await createSourceFile('docs/spec.md', '# Spec')
       const state = makeCleanupState('move-to-references')
-
+    
       const result = await runCleanupStage(state, '', projectDir)
-
+    
       expect(result.output).toContain('2')
       expect(result.output).toContain('move-to-references')
     })
@@ -276,33 +276,33 @@ describe('runCleanupStage', () => {
   // ==========================================================================
 
   describe('dry-run mode', () => {
-    it('returns early with dry-run message', async () => {
+    it.serial('returns early with dry-run message', async () => {
       const state = makeCleanupState('keep', { dryRun: true })
-
+    
       const result = await runCleanupStage(state, '', projectDir)
-
+    
       expect(result.output.toLowerCase()).toContain('dry-run')
       expect(result.output.toLowerCase()).toContain('skipped')
     })
 
-    it('does not modify any files in dry-run', async () => {
+    it.serial('does not modify any files in dry-run', async () => {
       await createSourceFile('docs/design.md', '# Design')
       await createSourceFile('docs/spec.md', '# Spec')
       const state = makeCleanupState('keep', { dryRun: true })
-
+    
       await runCleanupStage(state, '', projectDir)
-
+    
       // No report generated
       await expect(fs.access(path.join(targetDir, 'migration-report.md'))).rejects.toThrow()
       // Source still exists
       expect(existsSync(path.join(sourceDir, 'docs/design.md'))).toBe(true)
     })
 
-    it('advances state to completed in dry-run', async () => {
+    it.serial('advances state to completed in dry-run', async () => {
       const state = makeCleanupState('delete', { dryRun: true })
-
+    
       const result = await runCleanupStage(state, '', projectDir)
-
+    
       expect(result.state.stage).toBe('completed')
     })
   })

@@ -131,8 +131,8 @@ For **clear-boundary** work: new features, requirement changes, refactors.
 [brainstorm →] feature → writing-plan → implement → quality-gate → archive
      ↑  optional                          ↑
   conversational only          Two implementation paths:
-  explore intent first          1. OpenCode: plan → build
-  when requirements unclear     2. omo: Prometheus → /startwork
+  explore intent first          1. OpenCode: /openflow-implement → build
+  when requirements unclear     2. omo: /openflow-implement → /start-work
 ```
 
 - **[brainstorm]**: Conversational exploration (optional) — when requirements are unclear, use `openflow-brainstorm` Skill for collaborative discussion before formalizing. No documents generated.
@@ -313,12 +313,13 @@ AI:  ✓ Generated issue-resolution.md (root cause, fix summary, recurrence sign
 
 Need a practical walkthrough instead of a command list? Read the step-by-step tutorial: [`docs/current/workflow/openflow-usage-tutorial.md`](./docs/current/workflow/openflow-usage-tutorial.md)
 
-### 🎯 You Only Need Five Core Commands
+### 🎯 You Only Need Six Core Commands
 
 ```text
 //openflow-brainstorm                    # Explore unclear requirements (optional)
 /openflow-feature <feature>           # Design a feature (Mode 1)
 /openflow-writing-plan <feature>      # Generate implementation plan
+/openflow-implement <feature>         # Create an ImplementationRun and delegate execution
 /openflow-issue <problem>            # Investigate a problem (Mode 2)
 openflow-quality-gate                # AI-invoked post-implementation quality gate
 ```
@@ -351,10 +352,13 @@ Once the design is clear, generate a structured implementation plan:
 - **Typical use**: After `/openflow-feature` when you need a structured plan before implementation. The plan uses bounded work packages (not unlimited parallel decomposition) and includes budget warnings for oversized plans.
 - **Important**: Stops after saving the plan. Does NOT automatically start implementation.
 
-#### 4. Planning & Execution
-Once the design is finalized, you can bridge design to code in more than one way:
-- **With omo**: Use **Prometheus** to generate a development plan, then run `/startwork` to execute it with omo's agent workflow.
-- **With native OpenCode flow**: Use `/openflow-writing-plan` to generate a structured plan, then rely on OpenCode's native **plan** and **build** workflow. OpenFlow's core role is still the same: keep design, requirements, decisions, verification, and archive constraints attached to implementation.
+#### 4. Implementation: `/openflow-implement <feature>`
+Once the design and plan are ready, start governed execution:
+- **What it does**: Creates an `ImplementationRun`, optionally creates a git worktree for isolation, binds observer events, and delegates to the available backend.
+- **With omo**: Detects omo context and hands off to `/start-work <feature>`.
+- **Without omo**: Falls back to OpenCode's native build flow and records the run as an OpenCode backend execution.
+- **Lifecycle**: `created → starting_backend → running → quality_gate_pending → ready_for_archive → archived`.
+- **Why it matters**: Quality gate and archive can now reason about the same run lifecycle instead of relying only on conversational handoff.
 
 #### 5. Mid-Development Changes: `/openflow-change <feature> "<change description>"`
 When requirements shift during active development (after feature design is done but before archive):

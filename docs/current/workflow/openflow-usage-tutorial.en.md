@@ -90,8 +90,12 @@ If you do not want to read the entire guide first, follow one of these two paths
 
 4. Implement the feature
 
-- With omo: use `Prometheus + /startwork`
-- Without omo: use OpenCode native `plan / build`
+```text
+/openflow-implement demo-feature
+```
+
+- With omo: OpenFlow hands off to `/start-work demo-feature`
+- Without omo: OpenFlow hands off to native OpenCode build flow
 
 5. Run the quality gate after implementation
 
@@ -200,7 +204,7 @@ Ask these questions in order.
 ### Question 4: Has implementation already happened?
 
 - **Not yet**
-  - Continue with planning and execution
+  - Run `/openflow-implement <feature>` to start a tracked implementation run
 - **Yes, and I want to know if I can claim completion**
   - Ask the AI to invoke `openflow-quality-gate`
 - **Quality gate is done and I want to make it canonical**
@@ -209,6 +213,7 @@ Ask these questions in order.
 Short memory rule:
 
 - `feature` = design first
+- `implement` = create the implementation run, bind observer events, and hand off execution
 - `issue` = clarify first
 - `quality-gate` = automatically decide harden and produce evidence/readiness
 - `archive` = freeze and promote
@@ -266,6 +271,22 @@ What this does:
 
 ### Step 4: Implement
 
+Run:
+
+```text
+/openflow-implement user-coupon-filter
+```
+
+`/openflow-implement` creates an `ImplementationRun`, records the execution directory, backend, and event log paths, then chooses the execution backend from the environment.
+
+For isolated execution, use a git worktree:
+
+```text
+/openflow-implement user-coupon-filter --worktree
+```
+
+Lifecycle: `created → starting_backend → running → quality_gate_pending → ready_for_archive → archived`.
+
 You have two valid execution paths.
 
 #### Path 1: With omo (recommended)
@@ -274,20 +295,22 @@ If you have [oh-my-openagent (omo)](https://github.com/nicepkg/oh-my-openagent):
 
 1. **Plan already generated**: Step 3's `/openflow-writing-plan` already saved the plan to `.sisyphus/plans/user-coupon-filter.md`
 2. **Switch to Prometheus**: Prometheus is omo's execution agent. Switch to it in OpenCode — it reads your plan file automatically
-3. **Execute**: Run `/start-work` — omo dispatches tasks to sub-agents according to the plan
+3. **Execute**: `/openflow-implement` hands off `/start-work user-coupon-filter` — omo dispatches tasks to sub-agents according to the plan
 
 ```text
 [Step 3 done: /openflow-writing-plan saved the plan]
           ↓
 Switch to Prometheus (omo's execution agent)
           ↓
-/start-work        ← reads .sisyphus/plans/*.md and begins execution
+/openflow-implement user-coupon-filter
+          ↓
+/start-work user-coupon-filter        ← reads .sisyphus/plans/*.md and begins execution
 ```
 
 #### Path 2: With native OpenCode plan/build
 
 - Use OpenCode native planning
-- Execute through native build/execution flow
+- `/openflow-implement` hands off to native build/execution flow
 
 OpenFlow does not require omo. Its main job is still documentation governance, constraint enforcement, verification, and archive.
 
@@ -553,7 +576,32 @@ This section explains each command in a practical reference style: syntax, param
 - writes a parser-compatible execution plan
 - stops after saving; it does not start implementation automatically
 
-### 12.5 `/openflow-issue <issue-name-or-description>`
+### 12.5 `/openflow-implement <feature>`
+
+**Purpose**: Start a tracked implementation run after design and planning are ready.
+
+**Usage**:
+
+```text
+/openflow-implement user-coupon-filter
+/openflow-implement user-coupon-filter --worktree
+```
+
+**Expected behavior**:
+
+- creates an `ImplementationRun` with feature, session, directory, backend, and event log paths
+- optionally creates a git worktree for isolated execution
+- binds observer events for backend, quality-gate, and archive transitions
+- detects omo: with omo it hands off `/start-work <feature>`; without omo it hands off to native OpenCode build flow
+- `openflow-quality-gate` later advances the run to `ready_for_archive`; `/openflow-archive` advances it to `archived`
+
+**Lifecycle**:
+
+```text
+created → starting_backend → running → quality_gate_pending → ready_for_archive → archived
+```
+
+### 12.6 `/openflow-issue <issue-name-or-description>`
 
 **Purpose**: Investigate an uncertain problem before deciding whether it is a bug, data issue, config issue, or behavior change.
 
@@ -588,7 +636,7 @@ This section explains each command in a practical reference style: syntax, param
 - automatically searches historical similar issues (from `docs/archive/` and `docs/changes/`) and shows hints
 - provides a recommended next step based on classification (e.g., use `--resolve` to enter fix flow, or escalate to `/openflow-feature`)
 
-### 12.6 `openflow-quality-gate` Skill
+### 12.7 `openflow-quality-gate` Skill
 
 **Purpose**: AI-callable quality gate after implementation or bug fix completion.
 
@@ -616,7 +664,7 @@ openflow-quality-gate
 
 `/openflow-harden` and `/openflow-verify` are no longer normal manual workflow entrypoints. Their underlying capabilities are coordinated by `openflow-quality-gate`.
 
-### 12.7 `/openflow-archive <feature>`
+### 12.8 `/openflow-archive <feature>`
 
 **Purpose**: Freeze a completed change into long-term project knowledge.
 
@@ -898,6 +946,7 @@ It will not run if you also pass `--readonly`, `--env production`, or `--no-doc`
 |---|---|
 | Initialize the OpenFlow docs guide | `/openflow-init` |
 | Start feature design clarification | `/openflow-feature <feature>` |
+| Start a tracked implementation run | `/openflow-implement <feature>` |
 | Triage an uncertain problem | `/openflow-issue <issue>` |
 | Apply a requirement change to an active feature | `/openflow-change <feature> "<change description>"` |
 | Generate an implementation plan | `/openflow-writing-plan <feature>` |
