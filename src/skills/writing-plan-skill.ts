@@ -154,7 +154,7 @@ export function getWritingPlanSkill(): SkillInfo {
       'After the plan file is written, **stop**. Do not execute the plan.',
       'Do not create or suggest an `executing-plans` command.',
       'Do not invoke OMO, Prometheus, or any execution agent.',
-      'Do not add OpenCode task blocks, start-work commands, or manual harden/verify commands.',
+      'Do not add OpenCode task blocks, start-work commands, or manual harden/verify commands. The implementation entrypoint is `/openflow-implement <feature>`.',
       '',
       'The user will provide the plan document to their execution environment:',
       '- If **Prometheus** is the target: hand off to Prometheus for interview, clearance, and execution.',

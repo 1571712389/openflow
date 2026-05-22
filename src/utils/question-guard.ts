@@ -47,7 +47,7 @@ export interface QuestionGuardResult {
   /** Updated promptedIds (caller should persist if needed) */
   updatedPromptedIds: string[]
   /** Updated lastMessageId (caller should persist if needed) */
-  updatedMessageId?: string
+  updatedMessageId: string | undefined
 }
 
 /**

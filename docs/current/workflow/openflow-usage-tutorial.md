@@ -103,11 +103,11 @@ npm install @fastknife/openflow
 /openflow-implement demo-feature --worktree
 ```
 
-这个命令会创建一条 `ImplementationRun`，然后根据当前环境自动分流：有 omo 时委派到 `/start-work demo-feature`，没有 omo 时回退到 OpenCode 原生 build 流程。
+这个命令会创建一条 `ImplementationRun`，然后根据当前环境自动分流：有 omo 时在内部自动委派到 `/start-work demo-feature`，没有 omo 时回退到 OpenCode 原生 build 流程。
 
 4. 推进实现
 
-- 如果你在用 omo：OpenFlow 会交接到 `/start-work demo-feature`
+- 如果你在用 omo：OpenFlow 会在内部自动委派到 `/start-work demo-feature`
 - 如果你不用 omo：OpenFlow 会交接到 OpenCode 原生 build 流程
 
 5. 实现完成后运行质量门
@@ -350,7 +350,7 @@ created → running → quality_gate_running → ready_for_archive → archived
 
 1. **计划已由 Step 3 生成**：`/openflow-writing-plan` 已经把开发计划写入了 `.sisyphus/plans/user-coupon-filter.md`
 2. **运行 implement**：`/openflow-implement user-coupon-filter` 创建 `ImplementationRun`
-3. **自动委派**：检测到 omo 后，OpenFlow 向当前 session 注入 `/start-work user-coupon-filter`
+3. **自动委派**：检测到 omo 后，OpenFlow 在内部自动委派到 `/start-work user-coupon-filter`
 4. **执行**：omo 按计划自动分配任务给子 agent 并行执行
 
 ```text
@@ -677,7 +677,7 @@ openflow-quality-gate
 **执行后会发生什么**：
 
 - 创建 `ImplementationRun`，记录 feature、session、agent、执行目录、backend、eventsPath 等信息
-- 如果检测到 omo，上下文会委派到 `/start-work <feature>`
+- 如果检测到 omo，上下文会在内部自动委派到 `/start-work <feature>`
 - 如果没有 omo，则回退到 OpenCode 原生 build 执行路径
 - observer 会把 backend、quality-gate、archive 相关事件记录到 run 事件日志
 

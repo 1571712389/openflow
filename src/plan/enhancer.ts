@@ -211,7 +211,7 @@ function addBudgetWarning(content: string, tasks: ParsedTask[]): string {
     `- **Same-wave tasks**: ${taskCount} (recommended max: ${MAX_SAME_WAVE_TASKS})`,
     `- **Estimated execution units**: ${estimatedUnits} (recommended max: ${MAX_ESTIMATED_UNITS})`,
     '',
-    '**Suggestion**: Split large waves across multiple `/start-work` invocations',
+    '**Suggestion**: Split large waves across multiple `/openflow-implement` invocations',
     'or reduce per-wave task count to keep execution feedback loops short.',
     '',
   ]

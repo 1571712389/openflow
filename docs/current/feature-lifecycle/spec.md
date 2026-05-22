@@ -111,7 +111,7 @@ Brainstorm 是 AI 触发的对话式 Skill，不是用户命令。
 
 `/openflow-implement <feature>` 创建 ImplementationRun 并委托执行。
 
-- OMO 环境：检测并路由到 `/start-work`
+- OMO 环境：在内部自动委派到 `/start-work`
 - 无 OMO：OpenCode 原生构建流程
 - 可选 git worktree 隔离
 - 生命周期状态可追踪：`created → starting_backend → running → quality_gate_pending → ready_for_archive → archived`

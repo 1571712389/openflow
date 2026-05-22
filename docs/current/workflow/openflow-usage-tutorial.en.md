@@ -94,7 +94,7 @@ If you do not want to read the entire guide first, follow one of these two paths
 /openflow-implement demo-feature
 ```
 
-- With omo: OpenFlow hands off to `/start-work demo-feature`
+- With omo: OpenFlow internally hands off to `/start-work demo-feature`
 - Without omo: OpenFlow hands off to native OpenCode build flow
 
 5. Run the quality gate after implementation
@@ -295,7 +295,7 @@ If you have [oh-my-openagent (omo)](https://github.com/nicepkg/oh-my-openagent):
 
 1. **Plan already generated**: Step 3's `/openflow-writing-plan` already saved the plan to `.sisyphus/plans/user-coupon-filter.md`
 2. **Switch to Prometheus**: Prometheus is omo's execution agent. Switch to it in OpenCode — it reads your plan file automatically
-3. **Execute**: `/openflow-implement` hands off `/start-work user-coupon-filter` — omo dispatches tasks to sub-agents according to the plan
+3. **Execute**: `/openflow-implement` internally hands off `/start-work user-coupon-filter` — omo dispatches tasks to sub-agents according to the plan
 
 ```text
 [Step 3 done: /openflow-writing-plan saved the plan]
@@ -592,7 +592,7 @@ This section explains each command in a practical reference style: syntax, param
 - creates an `ImplementationRun` with feature, session, directory, backend, and event log paths
 - optionally creates a git worktree for isolated execution
 - binds observer events for backend, quality-gate, and archive transitions
-- detects omo: with omo it hands off `/start-work <feature>`; without omo it hands off to native OpenCode build flow
+- detects omo: with omo it internally hands off `/start-work <feature>`; without omo it hands off to native OpenCode build flow
 - `openflow-quality-gate` later advances the run to `ready_for_archive`; `/openflow-archive` advances it to `archived`
 
 **Lifecycle**:

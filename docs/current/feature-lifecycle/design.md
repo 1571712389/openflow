@@ -56,7 +56,7 @@ Writing-plan 只保存计划，不自动开始实现。
 
 `/openflow-implement` 创建 `ImplementationRun` 并委托执行。
 
-- **OMO 环境**：路由到 `/start-work <feature>`
+- **OMO 环境**：在内部自动委派到 `/start-work <feature>`
 - **无 OMO**：回退到 OpenCode 原生构建流程
 - **生命周期**：`created → starting_backend → running → quality_gate_pending → ready_for_archive → archived`
 - **Worktree 隔离**：可选创建 git worktree

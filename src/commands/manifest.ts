@@ -30,7 +30,7 @@ export const OPENFLOW_TOOL_COMMANDS = {
   },
   implement: {
     name: 'openflow-implement',
-    description: 'OpenFlow implementation command. Creates an ImplementationRun and delegates to the selected backend (omo /start-work or OpenCode native build).',
+    description: 'OpenFlow implementation command. Creates an ImplementationRun and delegates to the selected backend (omo via /start-work or OpenCode native build). User entrypoint is /openflow-implement <feature>.'
   },
 } as const satisfies Record<string, OpenFlowCommandMetadata>
 

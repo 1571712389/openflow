@@ -4,6 +4,7 @@ import type { ToolContext } from '@opencode-ai/plugin/tool'
 import type { ImplementationBackend, ImplementationRun, OpenFlowContext } from '../types.js'
 import { implementationRunStore } from './implementation-run.js'
 import { detectOmoEnvironment } from './omo-detection.js'
+import { logger } from './logger.js'
 
 export interface BackendHandoffResult {
   success: boolean
@@ -39,10 +40,14 @@ export async function handoffToBackend(
   run: ImplementationRun,
   toolContext: ToolContext,
 ): Promise<BackendHandoffResult> {
+  logger.debug('orchestrator', 'handoffToBackend started', { runID: run.runID, feature: run.feature, sessionID: toolContext.sessionID })
+
   const environment = await detectOmoEnvironment(ctx)
+  logger.debug('orchestrator', 'omo environment detected', { environment, runID: run.runID })
 
   if (environment === 'non-omo') {
     const command = 'opencode build'
+    logger.info('orchestrator', 'non-omo environment, using opencode backend', { runID: run.runID, command })
     await updateRunBackend(ctx, run, 'opencode', command, 'running')
     await recordBackendEvent(ctx, run, { type: 'backend_started', backend: 'opencode', command })
     return { success: true, backend: 'opencode', command }
@@ -51,28 +56,33 @@ export async function handoffToBackend(
   const command = `/start-work ${run.feature}`
   if (activeHandoffs.has(toolContext.sessionID)) {
     const error = 'Recursion guard: handoff already in progress'
+    logger.warn('orchestrator', 'backend handoff blocked by recursion guard', { runID: run.runID, sessionID: toolContext.sessionID })
     await updateRunBackend(ctx, run, 'omo', command, 'blocked')
     await recordBackendEvent(ctx, run, { type: 'backend_failed', backend: 'omo', command, error })
     return { success: false, backend: 'omo', error }
   }
 
   activeHandoffs.add(toolContext.sessionID)
+  logger.debug('orchestrator', 'sending omo handoff prompt', { runID: run.runID, command, sessionID: toolContext.sessionID })
   try {
     await getPromptClient(ctx).session.prompt({
       path: { id: toolContext.sessionID },
       body: { parts: [{ type: 'text', text: command }] },
     })
 
+    logger.info('orchestrator', 'omo handoff prompt sent successfully', { runID: run.runID, command })
     await updateRunBackend(ctx, run, 'omo', command, 'running')
     await recordBackendEvent(ctx, run, { type: 'backend_started', backend: 'omo', command })
     return { success: true, backend: 'omo', command }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    logger.error('orchestrator', 'omo handoff prompt failed', error instanceof Error ? error : new Error(message), { runID: run.runID, command })
     await updateRunBackend(ctx, run, 'omo', command, 'blocked')
     await recordBackendEvent(ctx, run, { type: 'backend_failed', backend: 'omo', command, error: message })
     return { success: false, backend: 'omo', error: message }
   } finally {
     activeHandoffs.delete(toolContext.sessionID)
+    logger.debug('orchestrator', 'handoffToBackend finished', { runID: run.runID })
   }
 }
 

@@ -221,6 +221,22 @@ describe('writing-plan dual-path contract', () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test('command packet suggests /openflow-implement instead of /start-work', async () => {
+    const root = join(process.cwd(), '.test-wp-implement-guidance')
+    await rm(root, { recursive: true, force: true })
+
+    const result = await handleWritingPlan(createCtx(root), 'implement-guidance')
+
+    // Must suggest user-visible entrypoint
+    expect(result).toContain('/openflow-implement')
+    expect(result).toContain('implement-guidance')
+    // Must not suggest manual /start-work to the user
+    expect(result).not.toContain('/start-work')
+    expect(result).not.toContain('/startwork')
+
+    await rm(root, { recursive: true, force: true })
+  })
+
   test('skill clarifies dual-save identity only applies before execution state diverges', () => {
     const skill = getWritingPlanSkill()
 

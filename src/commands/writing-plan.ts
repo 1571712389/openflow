@@ -110,7 +110,7 @@ This skill does NOT replace or disable any OMO/Prometheus built-in capabilities.
 ### Next Step
 
 1. Review the plan structure above and write the plan to the output paths
-2. After the plan is written, start implementation (e.g. with omo /startwork or OpenCode plan/build)
+2. After the plan is written, run \`/openflow-implement ${escapeMarkdown(sanitizedFeature)}\` to start implementation
 3. Once implementation is complete, invoke the quality gate:
 
 \`\`\`

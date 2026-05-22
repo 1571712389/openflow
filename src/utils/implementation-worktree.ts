@@ -2,6 +2,7 @@ import { execSync } from 'node:child_process'
 import { existsSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import type { OpenFlowContext } from '../types.js'
+import { logger } from '../utils/logger.js'
 
 export interface WorktreeResult {
   success: boolean
@@ -17,19 +18,26 @@ export function resolveWorktreePath(ctx: OpenFlowContext, feature: string): stri
 export async function createWorktree(ctx: OpenFlowContext, feature: string): Promise<WorktreeResult> {
   const path = resolveWorktreePath(ctx, feature)
   const branch = `openflow/implement-${feature}`
+  logger.debug('orchestrator', 'createWorktree started', { feature, path, branch })
 
   try {
+    logger.debug('orchestrator', 'git worktree add with new branch', { path, branch })
     runGitCommand(ctx, ['worktree', 'add', '-b', branch, path])
+    logger.info('orchestrator', 'worktree created with new branch', { path, branch })
     return { success: true, path, branch }
   } catch (firstErr: unknown) {
     if (!isBranchAlreadyExistsError(firstErr)) {
+      logger.warn('orchestrator', 'git worktree add failed', { feature, error: errorMessage(firstErr) })
       return { success: false, path, error: errorMessage(firstErr) }
     }
 
+    logger.debug('orchestrator', 'branch already exists, trying worktree add with existing branch', { path, branch })
     try {
       runGitCommand(ctx, ['worktree', 'add', path, branch])
+      logger.info('orchestrator', 'worktree created with existing branch', { path, branch })
       return { success: true, path, branch }
     } catch (secondErr: unknown) {
+      logger.warn('orchestrator', 'git worktree add with existing branch failed', { feature, error: errorMessage(secondErr) })
       return { success: false, path, branch, error: errorMessage(secondErr) }
     }
   }
@@ -38,19 +46,26 @@ export async function createWorktree(ctx: OpenFlowContext, feature: string): Pro
 export async function removeWorktree(ctx: OpenFlowContext, feature: string): Promise<WorktreeResult> {
   const path = resolveWorktreePath(ctx, feature)
   const branch = `openflow/implement-${feature}`
+  logger.debug('orchestrator', 'removeWorktree started', { feature, path })
 
   try {
     runGitCommand(ctx, ['worktree', 'remove', '--force', path])
+    logger.info('orchestrator', 'worktree removed', { path })
     return { success: true, path, branch }
   } catch (firstErr: unknown) {
+    logger.debug('orchestrator', 'force worktree remove failed, trying normal remove', { error: errorMessage(firstErr) })
     try {
       runGitCommand(ctx, ['worktree', 'remove', path])
+      logger.info('orchestrator', 'worktree removed (normal)', { path })
       return { success: true, path, branch }
     } catch (secondErr: unknown) {
+      logger.debug('orchestrator', 'normal worktree remove failed, trying filesystem cleanup', { error: errorMessage(secondErr) })
       try {
         rmSync(path, { recursive: true, force: true })
+        logger.info('orchestrator', 'worktree removed via filesystem cleanup', { path })
         return { success: true, path, branch }
       } catch (cleanupErr: unknown) {
+        logger.warn('orchestrator', 'all worktree removal attempts failed', { feature, error: errorMessage(cleanupErr) })
         return {
           success: false,
           path,
@@ -67,8 +82,10 @@ export async function verifyWorktree(
   feature: string,
 ): Promise<{ exists: boolean; path: string }> {
   const path = resolveWorktreePath(ctx, feature)
+  logger.debug('orchestrator', 'verifying worktree', { feature, path })
 
   if (!existsSync(path)) {
+    logger.debug('orchestrator', 'worktree path does not exist', { path })
     return { exists: false, path }
   }
 
@@ -78,8 +95,11 @@ export async function verifyWorktree(
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     })
-    return { exists: worktreeListIncludesPath(list, path), path }
+    const exists = worktreeListIncludesPath(list, path)
+    logger.debug('orchestrator', 'worktree verification result', { path, exists })
+    return { exists, path }
   } catch {
+    logger.debug('orchestrator', 'worktree verification failed (git worktree list error)', { path })
     return { exists: false, path }
   }
 }

@@ -25,15 +25,19 @@ export async function handleImplement(
   toolContext?: ToolContext,
   observer?: ImplementObserver,
 ): Promise<string> {
+  logger.info('orchestrator', 'handleImplement started', { feature, useWorktree, sessionID: toolContext?.sessionID })
+
   // ── 1. Resolve feature name ─────────────────────────────────────────────
   const providedFeature = stripCommandTokens(feature)
   const resolvedFeature = providedFeature || await findActiveFeature(ctx)
 
   if (!resolvedFeature) {
+    logger.warn('orchestrator', 'handleImplement: no feature resolved')
     return 'Error: No feature specified and no active feature found. Provide a feature name: openflow-implement <feature>'
   }
 
   const sanitizedFeature = sanitizeFeatureName(resolvedFeature)
+  logger.debug('orchestrator', 'feature resolved', { sanitizedFeature, provided: !!providedFeature })
 
   // ── 2. Derive session context ───────────────────────────────────────────
   const sessionID = toolContext?.sessionID ?? ''
@@ -46,9 +50,10 @@ export async function handleImplement(
   const backendCommand = ''
 
   // ── 3. Check for duplicate active run ───────────────────────────────────
+  logger.debug('orchestrator', 'checking for duplicate active run', { sanitizedFeature, sessionID: sessionID || undefined })
   const activeRun = await implementationRunStore.getActiveRun(ctx, sanitizedFeature, sessionID || undefined)
   if (activeRun) {
-    logger.warn('Duplicate active run blocked', { feature: sanitizedFeature, runID: activeRun.runID })
+    logger.warn('orchestrator', 'duplicate active run blocked', { feature: sanitizedFeature, runID: activeRun.runID })
     return [
       '## Implementation Run — Duplicate Blocked',
       '',
@@ -65,12 +70,14 @@ export async function handleImplement(
 
   // ── 4. Optionally create worktree ───────────────────────────────────────
   if (useWorktree) {
+    logger.debug('orchestrator', 'creating worktree', { feature: sanitizedFeature })
     const result = await createWorktree(ctx, sanitizedFeature)
     if (result.success) {
       directory = result.path
       worktree = result.path
+      logger.info('orchestrator', 'worktree created', { path: result.path, branch: result.branch })
     } else {
-      logger.warn('Worktree creation failed', { feature: sanitizedFeature, error: result.error })
+      logger.warn('orchestrator', 'worktree creation failed', { feature: sanitizedFeature, error: result.error })
       return [
         '## Implementation Run — Worktree Creation Failed',
         '',
@@ -87,6 +94,7 @@ export async function handleImplement(
   const eventsPath = join('.sisyphus', 'openflow', 'events', `${sanitizedFeature}.jsonl`)
   const observationsPath = join('.sisyphus', 'openflow', 'observations', `${sanitizedFeature}.jsonl`)
 
+  logger.debug('orchestrator', 'creating implementation run', { sanitizedFeature, directory, worktree, containerMode })
   let run: ImplementationRun
   try {
     run = await implementationRunStore.createRun(ctx, {
@@ -104,27 +112,32 @@ export async function handleImplement(
       observationsPath,
     })
   } catch (error) {
+    logger.error('orchestrator', 'failed to create implementation run', error instanceof Error ? error : new Error(String(error)), { sanitizedFeature })
     return `Error: Failed to create implementation run: ${error instanceof Error ? error.message : String(error)}`
   }
 
-  logger.info('Implementation run created', { runID: run.runID, feature: sanitizedFeature })
+  logger.info('orchestrator', 'implementation run created', { runID: run.runID, feature: sanitizedFeature, directory, worktree })
 
   // ── 6. Set active run in observer ───────────────────────────────────────
   if (observer) {
+    logger.debug('orchestrator', 'setting active run in observer', { runID: run.runID })
     observer.setActiveRun(run)
   }
 
   // ── 7. Backend handoff ──────────────────────────────────────────────────
   let handoffResult: { success: boolean; backend: ImplementationBackend; command?: string; error?: string }
   if (toolContext) {
+    logger.debug('orchestrator', 'handing off to backend', { runID: run.runID, backend })
     try {
       handoffResult = await handoffToBackend(ctx, run, toolContext)
+      logger.info('orchestrator', 'backend handoff completed', { runID: run.runID, success: handoffResult.success, backend: handoffResult.backend, command: handoffResult.command })
       // Refresh observer with the persisted run (backendCommand updated by handoffToBackend)
       const updatedRun = await implementationRunStore.getRun(ctx, run.runID)
       if (updatedRun && observer) {
         observer.setActiveRun(updatedRun)
       }
     } catch (error) {
+      logger.error('orchestrator', 'backend handoff failed', error instanceof Error ? error : new Error(String(error)), { runID: run.runID })
       return [
         '## Implementation Run — Backend Handoff Failed',
         '',
@@ -136,8 +149,11 @@ export async function handleImplement(
       ].join('\n')
     }
   } else {
+    logger.debug('orchestrator', 'no toolContext, skipping backend handoff')
     handoffResult = { success: true, backend: 'opencode' as const, command: 'opencode build' }
   }
+
+  logger.info('orchestrator', 'handleImplement completed', { runID: run.runID, feature: sanitizedFeature, success: handoffResult.success })
 
   // ── 8. Return result ────────────────────────────────────────────────────
   return [
