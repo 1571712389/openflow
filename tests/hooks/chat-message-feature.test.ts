@@ -39,6 +39,12 @@ function createOutput(text: string) {
   } as Parameters<ReturnType<typeof createChatMessageHook>>[1]
 }
 
+function createOutputWithAgent(text: string, agent: string) {
+  const output = createOutput(text)
+  output.message.agent = agent
+  return output
+}
+
 function firstOutputText(output: ReturnType<typeof createOutput>): string {
   return ((output.parts[0] as { text?: string }).text) ?? ''
 }
@@ -62,25 +68,33 @@ describe('chat-message feature guidance', () => {
     await rm(root, { recursive: true, force: true })
   })
 
-  test('active issue workspace suppresses feature design suggestions', async () => {
-    const root = join(process.cwd(), '.test-chat-issue-mode-active')
+  test('suppresses feature suggestion during active Prometheus planning discussion', async () => {
+    const root = join(process.cwd(), '.test-chat-prometheus-suppression')
     await rm(root, { recursive: true, force: true })
-    await mkdir(join(root, 'docs', 'changes', '2026-05-13-api-500'), { recursive: true })
-    await writeFile(
-      join(root, 'docs', 'changes', '2026-05-13-api-500', 'issue-clarification.md'),
-      '# Issue Clarification\n\n### 1. Issue Intake\nAPI returns 500.',
-      'utf-8',
-    )
+    await mkdir(root, { recursive: true })
 
     const hook = createChatMessageHook(createContext(root))
-    const output = createOutput('帮我写一个登录功能')
+    const output = createOutputWithAgent('继续完善 openflow-writing-plan 的执行计划', 'Prometheus (Plan Builder)')
 
-    await hook(createInput('session-issue-active'), output)
+    await hook(createInput('session-prometheus'), output)
 
-    expect(firstOutputText(output)).toContain('OpenFlow: Issue Investigation Active')
-    expect(firstOutputText(output)).toContain('docs/changes/2026-05-13-api-500')
     expect(firstOutputText(output)).not.toContain('Feature Design Suggested')
-    expect(firstOutputText(output)).not.toContain('/openflow-feature')
+    expect(firstOutputText(output)).toBe('继续完善 openflow-writing-plan 的执行计划')
+
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test('suppresses feature suggestion for OpenFlow command echo messages', async () => {
+    const root = join(process.cwd(), '.test-chat-command-echo-suppression')
+    await rm(root, { recursive: true, force: true })
+    await mkdir(root, { recursive: true })
+
+    const hook = createChatMessageHook(createContext(root))
+    const output = createOutput('OpenFlow command: /openflow-writing-plan echo-suppression-test')
+
+    await hook(createInput('session-echo-command'), output)
+
+    expect(firstOutputText(output)).not.toContain('Feature Design Suggested')
 
     await rm(root, { recursive: true, force: true })
   })
@@ -98,28 +112,6 @@ describe('chat-message feature guidance', () => {
     expect(firstOutputText(output)).not.toContain('Feature Design Suggested')
     expect(firstOutputText(output)).not.toContain('system-reminder-all-backgro')
     expect(firstOutputText(output)).not.toContain('/openflow-feature')
-
-    await rm(root, { recursive: true, force: true })
-  })
-
-  test('active issue workspace notice is not duplicated when notice already exists in the turn', async () => {
-    const root = join(process.cwd(), '.test-chat-issue-mode-dedupe')
-    await rm(root, { recursive: true, force: true })
-    await mkdir(join(root, 'docs', 'changes', '2026-05-13-api-500'), { recursive: true })
-    await writeFile(
-      join(root, 'docs', 'changes', '2026-05-13-api-500', 'issue-clarification.md'),
-      '# Issue Clarification\n\n### 1. Issue Intake\nAPI returns 500.',
-      'utf-8',
-    )
-
-    const hook = createChatMessageHook(createContext(root))
-    const output = createOutput('## OpenFlow: Issue Investigation Active\n\nExisting notice from this turn.')
-
-    await hook(createInput('session-issue-dedupe'), output)
-
-    const combinedText = output.parts.map((part) => ((part as { text?: string }).text) ?? '').join('\n')
-    expect(combinedText.match(/OpenFlow: Issue Investigation Active/g)).toHaveLength(1)
-    expect(combinedText).not.toContain('tool/skill')
 
     await rm(root, { recursive: true, force: true })
   })

@@ -6,6 +6,7 @@ import { logger } from '../../utils/logger.js'
 import { generateCodeMappingTable } from './code-mapper.js'
 import { collectTraceabilityItems, type TraceabilityResult } from './traceability.js'
 import { fileExists } from '../../hooks/file-utils.js'
+import { t } from '../../i18n/index.js'
 
 export interface ImplementationMapperOptions {
   feature: string
@@ -23,6 +24,15 @@ export interface ImplementationMapperOptions {
   promotionCandidatePath?: string | null
   behaviorPath?: string | null
   guardianEvidence?: GuardianEvidence
+  evidenceDir?: string
+}
+
+export interface BehaviorCodeMapperOptions {
+  feature: string
+  projectDir: string
+  behaviorPath: string
+  changes: FileChangeRecord[]
+  readiness?: string
 }
 
 export async function generateImplementationMapper(options: ImplementationMapperOptions): Promise<string> {
@@ -53,8 +63,9 @@ export async function generateImplementationMapper(options: ImplementationMapper
     ...(phasedChanges !== undefined ? { phasedChanges } : {}),
   }
   const codeMappingSection = await generateImplementationMappingSection(feature, changes, traceability, codeMappingOptions)
+  const evidenceDir = options.evidenceDir ?? '.sisyphus/evidence'
   const behaviorMappingSection = options.behaviorPath
-    ? await generateBehaviorMappingSection(options.behaviorPath)
+    ? await generateBehaviorMappingSection(options.behaviorPath, changes, evidenceDir)
     : null
   const globalDepsSection = formatGlobalDepsSection(driftItems)
   const verificationSection = formatVerificationSection(acceptanceState, phasedChanges, driftItems)
@@ -65,12 +76,12 @@ export async function generateImplementationMapper(options: ImplementationMapper
 **Date**: ${date}
 **Status**: Archived
 
-## 1. 概述
+## ${t('templates.implementationMapper.overviewTitle')}
 
-本次变更解决了与 \`${safeFeature}\` 相关的实现追溯需求。
+${t('templates.implementationMapper.scopeLabel', { feature: safeFeature })}
 
-**归档时间**: ${date}
-**追溯范围**: 本次变更覆盖需求到实现的完整追溯链。
+**Date**: ${date}
+**Scope**: ${t('templates.implementationMapper.traceLabel')}
 `
 
   if (hasGlobalDeps) {
@@ -220,11 +231,17 @@ function formatGuardianEvidenceSection(evidence?: GuardianEvidence): string {
   ].join('\n')
 }
 
-async function generateBehaviorMappingSection(behaviorPath: string): Promise<string> {
+async function generateBehaviorMappingSection(
+  behaviorPath: string,
+  changes: FileChangeRecord[],
+  evidenceDir: string,
+): Promise<string> {
   const rows: BehaviorMappingRow[] = []
+  let evidenceMappings: BehaviorEvidenceMapping[] = []
   try {
     const content = await fs.readFile(behaviorPath, 'utf-8')
     rows.push(...parseBehaviorMappingRows(content))
+    evidenceMappings = parseEvidenceMappingTable(content)
   } catch {
     return 'Unable to parse behavior document.\n'
   }
@@ -233,19 +250,45 @@ async function generateBehaviorMappingSection(behaviorPath: string): Promise<str
     return 'No behavior scenarios found.\n'
   }
 
-  const header = '| Behavior Scenario | Type | Expected Behavior | Evidence | Code Files | Key Symbols | Notes |'
-  const sep = '|------------------|------|-------------------|----------|------------|-------------|-------|'
-  const lines = rows.map(row => (
-    `| ${escapeMarkdown(row.name)} | ${escapeMarkdown(row.type)} | ${escapeMarkdown(row.expectedBehavior)} | — | — | — | ${escapeMarkdown(row.notes)} |`
+  const evidenceByKey = buildEvidenceMappingIndex(evidenceMappings)
+  const codeFiles = formatChangedCodeFiles(changes)
+  const enrichedRows = rows.map(row => enrichBehaviorMappingRow(row, evidenceByKey, codeFiles))
+
+  const header = '| Behavior Scenario | Type | Expected Behavior | Evidence | Coverage Level | Freshness | Status | Code Files | Notes |'
+  const sep = '|------------------|------|-------------------|----------|----------------|-----------|--------|------------|-------|'
+  const lines = enrichedRows.map(row => (
+    `| ${escapeMarkdown(row.name)} | ${escapeMarkdown(row.type)} | ${escapeMarkdown(row.expectedBehavior)} | ${escapeMarkdown(row.evidenceRef)} | ${escapeMarkdown(row.coverageLevel)} | ${escapeMarkdown(row.freshness)} | ${escapeMarkdown(row.status)} | ${escapeMarkdown(row.codeFiles)} | ${escapeMarkdown(row.notes)} |`
   ))
-  return [header, sep, ...lines].join('\n') + '\n'
+  const evidenceFiles = await listEvidenceFiles(evidenceDir)
+  const evidenceFilesSection = evidenceFiles.length > 0
+    ? ['### Evidence Files', '', ...evidenceFiles.map(file => `- ${escapeMarkdown(file)}`)].join('\n') + '\n'
+    : ''
+
+  return [header, sep, ...lines].join('\n') + '\n' + (evidenceFilesSection ? `\n${evidenceFilesSection}` : '')
 }
 
 interface BehaviorMappingRow {
+  scenarioId?: string
   name: string
   type: 'scenario' | 'boundary'
   expectedBehavior: string
+  evidenceRef: string
+  coverageLevel: string
+  freshness: string
+  status: string
+  codeFiles: string
   notes: string
+}
+
+interface BehaviorEvidenceMapping {
+  scenarioId: string
+  criticality: string
+  evidenceRef: string
+  evidenceType: string
+  coverageLevel: string
+  equivalenceRationale: string
+  freshness: string
+  status: string
 }
 
 function parseBehaviorMappingRows(content: string): BehaviorMappingRow[] {
@@ -262,10 +305,17 @@ function parseBehaviorMappingRows(content: string): BehaviorMappingRow[] {
 
   const pushCurrent = () => {
     if (!current) return
+    const scenarioIdentity = parseScenarioIdentity(current.name)
     rows.push({
-      name: current.name,
+      ...(scenarioIdentity.scenarioId ? { scenarioId: scenarioIdentity.scenarioId } : {}),
+      name: scenarioIdentity.displayName,
       type: current.type,
       expectedBehavior: formatExpectedBehavior(current.given, current.when, current.then),
+      evidenceRef: 'N/A',
+      coverageLevel: 'missing',
+      freshness: 'unknown',
+      status: 'missing_evidence',
+      codeFiles: '—',
       notes: current.type === 'boundary' ? 'Boundary scenario; should-pass evidence.' : 'Critical behavior scenario.',
     })
   }
@@ -303,6 +353,201 @@ function parseBehaviorMappingRows(content: string): BehaviorMappingRow[] {
   return rows
 }
 
+function parseScenarioIdentity(rawName: string): { scenarioId?: string; displayName: string } {
+  const trimmed = rawName.trim()
+  const match = trimmed.match(/^([A-Z]+-\d+)\b\s*[:：\-–—]?\s*(.*)$/i)
+  if (!match) return { displayName: trimmed }
+
+  const scenarioId = match[1]!.trim()
+  const displayName = match[2]?.trim() || scenarioId
+  return { scenarioId, displayName }
+}
+
+function parseEvidenceMappingTable(content: string): BehaviorEvidenceMapping[] {
+  const lines = content.split('\n')
+  const newFormatStart = lines.findIndex(line =>
+    /^\|\s*Scenario\s*ID\s*\|\s*Criticality\s*\|\s*Evidence\s*Ref\s*\|\s*Evidence\s*Type\s*\|/i.test(line.trim()),
+  )
+  if (newFormatStart >= 0) return parseNewFormatEvidenceMappingTable(lines, newFormatStart)
+
+  const oldFormatStart = lines.findIndex(line =>
+    /^\|\s*Behavior\s*\|\s*Evidence\s*Type\s*\|\s*Expected\s*Evidence\s*\|\s*Status\s*\|/i.test(line.trim()),
+  )
+  if (oldFormatStart >= 0) return parseOldFormatEvidenceMappingTable(lines, oldFormatStart)
+
+  return []
+}
+
+function parseNewFormatEvidenceMappingTable(lines: string[], tableStart: number): BehaviorEvidenceMapping[] {
+  const mappings: BehaviorEvidenceMapping[] = []
+  for (const line of lines.slice(tableStart + 1)) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('|')) break
+    if (/^\|[\s\-:|]+\|$/.test(trimmed)) continue
+
+    const cells = splitMarkdownTableRow(trimmed)
+    if (cells.length < 8) continue
+    const scenarioId = cells[0]?.trim() ?? ''
+    if (!scenarioId) continue
+
+    mappings.push({
+      scenarioId,
+      criticality: cells[1] || 'critical',
+      evidenceRef: cells[2] || 'N/A',
+      evidenceType: cells[3] || 'manual',
+      coverageLevel: normalizeCoverageLevelForArchive(cells[4] ?? ''),
+      equivalenceRationale: cells[5] ?? '',
+      freshness: normalizeFreshnessForArchive(cells[6] ?? ''),
+      status: normalizeEvidenceStatusForArchive(cells[7] ?? ''),
+    })
+  }
+  return mappings
+}
+
+function parseOldFormatEvidenceMappingTable(lines: string[], tableStart: number): BehaviorEvidenceMapping[] {
+  const mappings: BehaviorEvidenceMapping[] = []
+  for (const line of lines.slice(tableStart + 1)) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('|')) break
+    if (/^\|[\s\-:|]+\|$/.test(trimmed)) continue
+
+    const cells = splitMarkdownTableRow(trimmed)
+    if (cells.length < 4) continue
+    const scenarioId = cells[0]?.trim() ?? ''
+    if (!scenarioId) continue
+    const status = normalizeEvidenceStatusForArchive(cells[3] ?? '')
+
+    mappings.push({
+      scenarioId,
+      criticality: 'critical',
+      evidenceRef: cells[2] || 'N/A',
+      evidenceType: cells[1] || 'manual',
+      coverageLevel: status === 'verified' ? 'exact' : 'missing',
+      equivalenceRationale: '',
+      freshness: 'unknown',
+      status,
+    })
+  }
+  return mappings
+}
+
+function buildEvidenceMappingIndex(mappings: BehaviorEvidenceMapping[]): Map<string, BehaviorEvidenceMapping> {
+  const index = new Map<string, BehaviorEvidenceMapping>()
+  for (const mapping of mappings) {
+    const keys = [mapping.scenarioId, parseScenarioIdentity(mapping.scenarioId).displayName]
+    for (const key of keys) {
+      const normalized = normalizeEvidenceKeyForArchive(key)
+      if (normalized && !index.has(normalized)) index.set(normalized, mapping)
+    }
+  }
+  return index
+}
+
+function enrichBehaviorMappingRow(
+  row: BehaviorMappingRow,
+  evidenceByKey: Map<string, BehaviorEvidenceMapping>,
+  codeFiles: string,
+): BehaviorMappingRow {
+  const evidence = findEvidenceMappingForRow(row, evidenceByKey)
+  const isAdvisory = !evidence && row.type === 'boundary'
+  const notes = isAdvisory
+    ? `${row.notes.replace(/\.?$/, '')}; advisory.`
+    : row.notes
+
+  if (!evidence) {
+    return {
+      ...row,
+      coverageLevel: isAdvisory ? 'not_applicable' : row.coverageLevel,
+      status: isAdvisory ? 'not_applicable' : row.status,
+      codeFiles,
+      notes,
+    }
+  }
+
+  return {
+    ...row,
+    evidenceRef: evidence.evidenceRef,
+    coverageLevel: evidence.coverageLevel,
+    freshness: evidence.freshness,
+    status: evidence.status,
+    codeFiles,
+  }
+}
+
+function findEvidenceMappingForRow(
+  row: BehaviorMappingRow,
+  evidenceByKey: Map<string, BehaviorEvidenceMapping>,
+): BehaviorEvidenceMapping | undefined {
+  const keys = [row.scenarioId, row.name].filter((key): key is string => Boolean(key))
+  for (const key of keys) {
+    const directMatch = evidenceByKey.get(normalizeEvidenceKeyForArchive(key))
+    if (directMatch) return directMatch
+  }
+
+  const normalizedName = normalizeEvidenceKeyForArchive(row.name)
+  for (const [key, evidence] of evidenceByKey) {
+    if (key.includes(normalizedName) || normalizedName.includes(key)) return evidence
+  }
+  return undefined
+}
+
+function formatChangedCodeFiles(changes: FileChangeRecord[]): string {
+  const uniqueFiles = [...new Set(changes.map(change => change.filePath).filter(Boolean))]
+  if (uniqueFiles.length === 0) return '—'
+
+  const visibleFiles = uniqueFiles.slice(0, 3)
+  const suffix = uniqueFiles.length > visibleFiles.length ? `; +${uniqueFiles.length - visibleFiles.length} more` : ''
+  return `${visibleFiles.join('; ')}${suffix}`
+}
+
+async function listEvidenceFiles(evidenceDir: string): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(evidenceDir, { withFileTypes: true })
+    return entries
+      .filter(entry => entry.isFile())
+      .map(entry => toPortablePath(path.join(evidenceDir, entry.name)))
+      .sort((a, b) => a.localeCompare(b))
+  } catch {
+    return []
+  }
+}
+
+function splitMarkdownTableRow(line: string): string[] {
+  return line.split('|').slice(1, -1).map(cell => cell.trim())
+}
+
+function normalizeCoverageLevelForArchive(value: string): string {
+  const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_')
+  if (normalized === 'exact') return 'exact'
+  if (normalized === 'equivalent') return 'equivalent'
+  if (normalized === 'partial') return 'partial'
+  if (normalized === 'not_applicable' || normalized === 'n/a' || normalized === 'na') return 'not_applicable'
+  return 'missing'
+}
+
+function normalizeFreshnessForArchive(value: string): string {
+  const normalized = value.trim().toLowerCase()
+  if (normalized === 'fresh') return 'fresh'
+  if (normalized === 'stale') return 'stale'
+  return 'unknown'
+}
+
+function normalizeEvidenceStatusForArchive(value: string): string {
+  const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_')
+  if (normalized === 'verified' || normalized === 'passed' || normalized === 'pass') return 'verified'
+  if (normalized === 'failed' || normalized === 'fail') return 'failed'
+  if (normalized === 'not_applicable' || normalized === 'n/a' || normalized === 'na') return 'not_applicable'
+  return 'missing_evidence'
+}
+
+function normalizeEvidenceKeyForArchive(value: string): string {
+  return value.trim().toLowerCase().replace(/[\s_:：\-–—]+/g, ' ')
+}
+
+function toPortablePath(filePath: string): string {
+  return filePath.split(path.sep).join('/')
+}
+
 function formatExpectedBehavior(given: string[], when: string[], then: string[]): string {
   const parts = [
     given.length > 0 ? `Given ${given.join('; ')}` : '',
@@ -324,7 +569,7 @@ async function generateImplementationMappingSection(
   }
 ): Promise<string> {
   if (changes.length === 0 && traceability.items.length === 0) {
-    return '未记录到需求/提案/设计追溯项，也没有检测到代码变更。\n'
+    return t('templates.implementationMapper.noTrace')
   }
 
   const generateOptions = {
@@ -336,17 +581,17 @@ async function generateImplementationMappingSection(
   const mappings = await generateCodeMappingTable(feature, changes, generateOptions)
 
   if (mappings.length === 0) {
-    return '未生成可用的追溯映射。\n'
+    return t('templates.implementationMapper.noMapping')
   }
 
-  const header = '| 追溯来源 | 需求/决策 | 代码文件 | 关键符号 | 关联说明 | 验证证据 |'
+  const header = t('templates.implementationMapper.tableHeader')
   const sep = '|----------|-----------|----------|----------|----------|----------|'
   const rows = mappings.map(mapping => (
     `| ${escapeMarkdown(mapping.source)} | ${escapeMarkdown(mapping.step)} | ${escapeMarkdown(mapping.filePath)} | ${escapeMarkdown(mapping.symbol || 'file-level fallback')} | ${escapeMarkdown(mapping.description || '')} | ${escapeMarkdown(mapping.verificationEvidence || '')} |`
   ))
 
   const note = traceability.usedDesignFallback
-    ? '> 未发现 requirements / proposal 追溯项，已回退使用 design 文档生成追溯关系。\n'
+    ? t('templates.implementationMapper.fallbackNotice')
     : ''
 
   return [note, header, sep, ...rows].filter(Boolean).join('\n') + '\n'
@@ -568,4 +813,81 @@ function formatIssueMappingRowChainSection(
   ]
 
   return lines.join('\n') + '\n'
+}
+
+// ---------------------------------------------------------------------------
+// 轻量版 Behavior → Code 映射生成器（供 quality-gate 环节调用）
+// ---------------------------------------------------------------------------
+
+export async function generateBehaviorCodeMapper(
+  options: BehaviorCodeMapperOptions
+): Promise<string> {
+  const { feature, behaviorPath, changes, readiness } = options
+  const date = new Date().toISOString().split('T')[0]
+  const safeFeature = escapeMarkdown(feature)
+
+  let rows: BehaviorMappingRow[] = []
+  let evidenceMappings: BehaviorEvidenceMapping[] = []
+  try {
+    const content = await fs.readFile(behaviorPath, 'utf-8')
+    rows.push(...parseBehaviorMappingRows(content))
+    evidenceMappings = parseEvidenceMappingTable(content)
+  } catch {
+    // 无法读取 behavior 文档时返回占位
+  }
+
+  const evidenceByKey = buildEvidenceMappingIndex(evidenceMappings)
+  const codeFiles = formatChangedCodeFiles(changes)
+  const enrichedRows = rows.map(row => enrichBehaviorMappingRow(row, evidenceByKey, codeFiles))
+
+  const behaviorTableHeader =
+    '| Behavior Scenario | Type | Expected Behavior | Code Files | Key Symbols |'
+  const behaviorTableSep =
+    '|-------------------|------|-------------------|------------|-------------|'
+  const behaviorTableRows = enrichedRows.map(row => {
+    const symbols = row.codeFiles === '—' ? '—' : 'see behavior.md'
+    return `| ${escapeMarkdown(row.name)} | ${escapeMarkdown(row.type)} | ${escapeMarkdown(row.expectedBehavior)} | ${escapeMarkdown(row.codeFiles)} | ${escapeMarkdown(symbols)} |`
+  })
+
+  const evidenceTableHeader =
+    '| Scenario ID | Criticality | Evidence Ref | Coverage Level | Status |'
+  const evidenceTableSep =
+    '|-------------|-------------|--------------|----------------|--------|'
+  const evidenceTableRows = evidenceMappings.map(ev =>
+    `| ${escapeMarkdown(ev.scenarioId)} | ${escapeMarkdown(ev.criticality)} | ${escapeMarkdown(ev.evidenceRef)} | ${escapeMarkdown(ev.coverageLevel)} | ${escapeMarkdown(ev.status)} |`
+  )
+
+  const behaviorSection =
+    rows.length > 0
+      ? [
+          '## Behavior to Code Mapping',
+          '',
+          behaviorTableHeader,
+          behaviorTableSep,
+          ...behaviorTableRows,
+        ].join('\n') + '\n'
+      : '## Behavior to Code Mapping\n\nNo behavior scenarios found.\n'
+
+  const evidenceSection =
+    evidenceMappings.length > 0
+      ? [
+          '## Evidence Mapping',
+          '',
+          evidenceTableHeader,
+          evidenceTableSep,
+          ...evidenceTableRows,
+        ].join('\n') + '\n'
+      : ''
+
+  return [
+    `# ${safeFeature} - Implementation Mapper`,
+    '',
+    `**Date**: ${date}`,
+    `**Status**: ${readiness ? escapeMarkdown(readiness) : 'Mapped at quality gate'}`,
+    '',
+    behaviorSection,
+    evidenceSection,
+  ]
+    .filter(Boolean)
+    .join('\n')
 }

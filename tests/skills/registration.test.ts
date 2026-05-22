@@ -32,6 +32,7 @@ describe('skill registration', () => {
     expect(content).toContain('development plan')
     expect(content).toContain('/openflow-writing-plan <feature>')
     expect(content).toContain('openflow-writing-plan <feature>')
+    expect(content).toContain('Do NOT invoke this skill from brainstorm, ULW/ultrawork, or continuation flow unless the user explicitly asked for plan generation')
 
     const brainstormSkillPath = join(os.homedir(), '.config', 'opencode', 'skills', 'openflow-brainstorm', 'SKILL.md')
     const brainstormContent = await readFile(brainstormSkillPath, 'utf-8')
@@ -136,6 +137,66 @@ describe('writing-plan skill content contract', () => {
   })
 })
 
+describe('writing-plan skill content: superpowers steps', () => {
+  test('skill contains all 8 superpowers-style step labels', async () => {
+    const root = join(process.cwd(), '.test-skill-superpowers')
+    await rm(root, { recursive: true, force: true })
+
+    await registerSkills(createContext(root))
+
+    const skillPath = join(os.homedir(), '.config', 'opencode', 'skills', 'openflow-writing-plan', 'SKILL.md')
+    const content = await readFile(skillPath, 'utf-8')
+
+    const steps = [
+      'Scope Check',
+      'File Structure',
+      'Plan Document Header',
+      'Task Structure',
+      'No Placeholders',
+      'Remember',
+      'Self-Review',
+      'Execution Handoff',
+    ]
+    for (const step of steps) {
+      expect(content).toContain(step)
+    }
+
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test('skill includes blocking clarification language', async () => {
+    const root = join(process.cwd(), '.test-skill-blocking')
+    await rm(root, { recursive: true, force: true })
+
+    await registerSkills(createContext(root))
+
+    const skillPath = join(os.homedir(), '.config', 'opencode', 'skills', 'openflow-writing-plan', 'SKILL.md')
+    const content = await readFile(skillPath, 'utf-8')
+
+    expect(content).toContain('stop and ask clarifying questions')
+    expect(content).not.toContain('[DECISION NEEDED]')
+
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test('skill includes Prometheus precedence and agent routing', async () => {
+    const root = join(process.cwd(), '.test-skill-prometheus')
+    await rm(root, { recursive: true, force: true })
+
+    await registerSkills(createContext(root))
+
+    const skillPath = join(os.homedir(), '.config', 'opencode', 'skills', 'openflow-writing-plan', 'SKILL.md')
+    const content = await readFile(skillPath, 'utf-8')
+
+    expect(content).toContain('Prometheus Precedence')
+    expect(content).toContain('Prometheus wins')
+    expect(content).toContain('Agent Target')
+    expect(content).toContain('plan agent')
+
+    await rm(root, { recursive: true, force: true })
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Negative-scope: openflow-reflect must not be registered as a skill
 // The MVP uses openflow-ai-reflection as the skill name; openflow-reflect
@@ -178,19 +239,10 @@ describe('openflow-ai-reflection skill registration contract', () => {
   })
 })
 
-describe('openflow-issue skill registration contract', () => {
-  test('findSkillByName discovers openflow-issue in the skill registry', () => {
+describe('openflow-issue skill is not registered', () => {
+  test('findSkillByName returns undefined for openflow-issue', () => {
     const skill = findSkillByName('openflow-issue')
-    expect(skill).toBeDefined()
-    expect(skill!.name).toBe('openflow-issue')
-    expect(skill!.description).toContain('Issue investigation')
-  })
-
-  test('openflow-issue skill describes packet-first investigation and no auto-archive', () => {
-    const skill = findSkillByName('openflow-issue')
-    expect(skill).toBeDefined()
-    expect(skill!.content).toContain('issue packet')
-    expect(skill!.content).toContain('Do not auto-archive')
+    expect(skill).toBeUndefined()
   })
 })
 
@@ -341,6 +393,18 @@ describe('openflow-ai-reflection content: docs path and templates', () => {
     expect(content).toContain('## Markdown Templates')
     // Must contain a fenced code block with md language tag
     expect(content).toContain('```md')
+  })
+
+  test('index template separates reusable rules from concrete case samples', () => {
+    const skill = findSkillByName('openflow-ai-reflection')
+    expect(skill).toBeDefined()
+
+    const content = skill!.content
+    expect(content).toContain('## Reusable Rules')
+    expect(content).toContain('## Trigger Patterns')
+    expect(content).toContain('## Boundary Rules')
+    expect(content).toContain('## Case Samples')
+    expect(content).toContain('detailed failure evidence in the case files below')
   })
 })
 

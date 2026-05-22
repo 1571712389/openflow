@@ -1,13 +1,15 @@
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
-import { createHash } from 'node:crypto'
 import type { OpenFlowContext } from '../types.js'
 import { createSafePath, sanitizeFeatureName } from './security.js'
+import { tArray, tPatterns } from '../i18n/index.js'
+import { loadAcceptanceState } from './acceptance-state.js'
 
 export interface DerivedFeatureIdentity {
   slug: string
   title?: string | undefined
   sourceIntent?: string | undefined
+  lowConfidenceReason?: 'generic_slug' | 'generic_instruction' | undefined
 }
 
 export interface FeatureSessionCandidate {
@@ -18,7 +20,20 @@ export interface FeatureSessionCandidate {
 }
 
 export async function findActiveFeature(ctx: OpenFlowContext): Promise<string | null> {
-  const plansDir = createSafePath(ctx.directory, '.sisyphus', 'plans')
+  // Strategy 1: Check acceptance state for active feature with matching plan
+  const acceptanceState = await loadAcceptanceState(ctx.directory)
+  if (acceptanceState?.feature) {
+    const planPath = createSafePath(ctx.directory, ctx.config.paths.plans, `${acceptanceState.feature}.md`)
+    try {
+      await fs.access(planPath)
+      return acceptanceState.feature
+    } catch {
+      // Acceptance state feature doesn't have a matching plan file, continue to strategy 2
+    }
+  }
+
+  // Strategy 2: Find the most recently modified plan file
+  const plansDir = createSafePath(ctx.directory, ctx.config.paths.plans)
   try {
     const files = await fs.readdir(plansDir)
     const mdFiles = files.filter(file => file.endsWith('.md'))
@@ -26,7 +41,7 @@ export async function findActiveFeature(ctx: OpenFlowContext): Promise<string | 
 
     let latestFeature: { name: string; mtime: number } | null = null
     for (const file of mdFiles) {
-      const filePath = createSafePath(ctx.directory, '.sisyphus', 'plans', file)
+      const filePath = createSafePath(ctx.directory, ctx.config.paths.plans, file)
       const stat = await fs.stat(filePath)
       if (!latestFeature || stat.mtimeMs > latestFeature.mtime) {
         latestFeature = {
@@ -45,30 +60,50 @@ export function deriveFeatureIdentity(input: string): DerivedFeatureIdentity {
   const trimmed = input.trim()
   const direct = trySanitizeFeatureName(trimmed)
   if (direct && direct === trimmed.toLowerCase()) {
+    if (isGenericFeatureSlug(direct)) {
+      return {
+        slug: direct,
+        title: trimmed,
+        sourceIntent: trimmed,
+        lowConfidenceReason: 'generic_slug',
+      }
+    }
     return { slug: direct }
   }
 
+  if (looksLikeGenericFeatureInstruction(trimmed)) {
+    return {
+      slug: trySanitizeFeatureName(trimmed) ?? 'untitled-feature',
+      title: trimmed,
+      sourceIntent: trimmed,
+      lowConfidenceReason: 'generic_instruction',
+    }
+  }
+
   const asciiWords = trimmed.toLowerCase().match(/[a-z0-9]+/g) ?? []
-  const meaningfulWords = asciiWords.filter((word) => !['the', 'a', 'an', 'and', 'or', 'to', 'for', 'with'].includes(word))
+  const inferredWords = inferChineseFeatureWords(trimmed)
+  const meaningfulWords = [...asciiWords, ...inferredWords]
+    .filter((word) => !isIgnoredFeatureWord(word))
   const base = meaningfulWords.slice(0, 8).join('-')
-  const hash = createHash('sha256').update(trimmed).digest('hex').slice(0, 8)
-  const slug = trySanitizeFeatureName(base ? `${base}-${hash}` : `feature-${hash}`) ?? `feature-${hash}`
+  const lowConfidenceReason = base ? undefined : 'generic_instruction'
+  const slug = (base ? trySanitizeFeatureName(base) : undefined) ?? trySanitizeFeatureName(trimmed) ?? 'untitled-feature'
 
   return {
     slug,
     title: trimmed,
     sourceIntent: trimmed,
+    lowConfidenceReason,
   }
 }
 
-export async function findIncompleteFeatureSessions(projectDir: string): Promise<FeatureSessionCandidate[]> {
-  const featureDir = createSafePath(projectDir, '.sisyphus', 'feature')
+export async function findIncompleteFeatureSessions(projectDir: string, featureStateDir = '.sisyphus/feature'): Promise<FeatureSessionCandidate[]> {
+  const featureDir = createSafePath(projectDir, featureStateDir)
   try {
     const files = await fs.readdir(featureDir)
     const candidates: FeatureSessionCandidate[] = []
 
     for (const file of files.filter((entry) => entry.endsWith('.json') && entry !== 'active.json' && entry !== 'recent-completed.json')) {
-      const filePath = createSafePath(projectDir, '.sisyphus', 'feature', file)
+      const filePath = createSafePath(projectDir, featureStateDir, file)
       try {
         const content = JSON.parse(await fs.readFile(filePath, 'utf-8')) as Record<string, unknown>
         if (content.workflowState === 'completed') continue
@@ -77,14 +112,14 @@ export async function findIncompleteFeatureSessions(projectDir: string): Promise
           slug: path.basename(file, '.json'),
           title: typeof content.featureTitle === 'string' ? content.featureTitle : undefined,
           sourceIntent: typeof content.sourceIntent === 'string' ? content.sourceIntent : undefined,
-          updatedAt: typeof content.updatedAt === 'string' ? content.updatedAt : stat.mtime.toISOString(),
+          updatedAt: new Date(stat.mtimeMs).toISOString(),
         })
       } catch {
-        continue
+        // Skip unreadable files
       }
     }
 
-    return candidates.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+    return candidates.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
   } catch {
     return []
   }
@@ -96,4 +131,43 @@ function trySanitizeFeatureName(value: string): string | undefined {
   } catch {
     return undefined
   }
+}
+
+function isIgnoredFeatureWord(word: string): boolean {
+  return [
+    'the', 'a', 'an', 'and', 'or', 'to', 'for', 'with',
+    'feature', 'future', 'task', 'todo', 'change', 'update',
+    'doc', 'docs', 'document', 'documents', 'documentation',
+  ].includes(word)
+}
+
+function isGenericFeatureSlug(slug: string): boolean {
+  const words = slug.split('-').filter(Boolean)
+  return words.length === 0 || words.every(isIgnoredFeatureWord)
+}
+
+function looksLikeGenericFeatureInstruction(input: string): boolean {
+  const normalized = input.trim().toLowerCase()
+  if (/^(?:future|feature|task|todo|change|update)(?:\s+|[-_])*(?:future|feature|task|todo|change|update)?$/u.test(normalized)) {
+    return true
+  }
+
+  const collectWords = tArray('resolver.collectConstraints')
+  const excludedFeatureTags = new Set(['quality', 'naming', 'rename', 'login', 'coupon', 'deduction', 'frontend', 'preview', 'stage', 'applicability', 'trigger', 'boundary'])
+  const excludedFeaturePatterns = tPatterns('resolver.featureKeywords')
+    .filter((keyword) => keyword.tags.some((tag) => excludedFeatureTags.has(tag)))
+    .map((keyword) => keyword.pattern)
+
+  return /^请/u.test(input)
+    && new RegExp(`(?:${collectWords.join('|')})`, 'u').test(input)
+    && /(?:约束|文档|相关文档|资料)/u.test(input)
+    && !new RegExp(`(?:${excludedFeaturePatterns.join('|')})`, 'u').test(input)
+}
+
+function inferChineseFeatureWords(input: string): string[] {
+  const dictionary: Array<[RegExp, string[]]> = [
+    ...tPatterns('resolver.featureKeywords').map((keyword) => [new RegExp(keyword.pattern, 'u'), keyword.tags] as [RegExp, string[]]),
+  ]
+
+  return dictionary.flatMap(([pattern, words]) => pattern.test(input) ? words : [])
 }

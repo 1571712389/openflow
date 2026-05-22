@@ -44,15 +44,16 @@ describe('OpenFlowPlugin', () => {
 
     expect(Object.keys(plugin.tool).sort()).toEqual([
           'openflow-archive',
-          'openflow-feature',
-           'openflow-init',
-           'openflow-issue',
+           'openflow-feature',
+           'openflow-implement',
+            'openflow-init',
           'openflow-migrate-docs',
            'openflow-quality-gate',
            'openflow-writing-plan',
         ].sort())
-    // Negative-scope: openflow-reflect must NOT be registered as a plugin tool
+    // Negative-scope: openflow-reflect and openflow-issue must NOT be registered as plugin tools
     expect(Object.keys(plugin.tool)).not.toContain('openflow-reflect')
+    expect(Object.keys(plugin.tool)).not.toContain('openflow-issue')
     expect(plugin['chat.message']).toBeFunction()
     expect(plugin['tool.execute.before']).toBeFunction()
     expect(plugin['tool.execute.after']).toBeFunction()
@@ -184,15 +185,16 @@ describe('OpenFlowPlugin', () => {
 
     expect(Object.keys(plugin.tool).sort()).toEqual([
           'openflow-archive',
-          'openflow-feature',
-           'openflow-init',
-           'openflow-issue',
+           'openflow-feature',
+           'openflow-implement',
+            'openflow-init',
           'openflow-migrate-docs',
            'openflow-quality-gate',
            'openflow-writing-plan',
         ].sort())
-    // Negative-scope: openflow-reflect must NOT be registered as a plugin tool
+    // Negative-scope: openflow-reflect and openflow-issue must NOT be registered as plugin tools
     expect(Object.keys(plugin.tool)).not.toContain('openflow-reflect')
+    expect(Object.keys(plugin.tool)).not.toContain('openflow-issue')
     expect(plugin['chat.message']).toBeFunction()
     expect(plugin['tool.execute.before']).toBeFunction()
     expect(plugin['tool.execute.after']).toBeFunction()
@@ -262,7 +264,7 @@ describe('OpenFlowPlugin', () => {
 
     const output = createChatOutput('/openflow-init')
     await plugin['chat.message']?.({ sessionID: 'session-init-command' } as never, output)
-    expect(firstOutputText(output)).toBe('initialized AGENTS.md and added OpenFlow docs guide')
+    expect(firstOutputText(output)).toContain('initialized AGENTS.md and added OpenFlow docs guide')
 
     // Verify AGENTS.md was created
     const agentsPath = join(root, 'AGENTS.md')
@@ -272,6 +274,35 @@ describe('OpenFlowPlugin', () => {
     expect(content).toContain('# OpenFlow')
     expect(content).toContain('<!-- OPENFLOW DOCS GUIDE:BEGIN -->')
     expect(content).toContain('<!-- OPENFLOW DOCS GUIDE:END -->')
+
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test('switches agent to prometheus when OMO is detected via .sisyphus directory', async () => {
+    const root = join(process.cwd(), '.test-plugin-writing-plan-omo')
+    await rm(root, { recursive: true, force: true })
+    await mkdir(join(root, '.sisyphus', 'plans'), { recursive: true })
+
+    const plugin = await OpenFlowPlugin(createPluginInput(root) as never)
+
+    const output = createChatOutput('/openflow-writing-plan test-feature', 'session-omo')
+    await plugin['chat.message']?.({ sessionID: 'session-omo' } as never, output)
+    expect(firstOutputText(output)).toContain('OpenFlow Writing Plan Packet')
+    expect((output.message as Record<string, unknown>)['agent']).toBe('prometheus')
+
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test('switches agent to plan when OMO is not detected', async () => {
+    const root = join(process.cwd(), '.test-plugin-writing-plan-no-omo')
+    await rm(root, { recursive: true, force: true })
+
+    const plugin = await OpenFlowPlugin(createPluginInput(root) as never)
+
+    const output = createChatOutput('/openflow-writing-plan test-feature', 'session-no-omo')
+    await plugin['chat.message']?.({ sessionID: 'session-no-omo' } as never, output)
+    expect(firstOutputText(output)).toContain('OpenFlow Writing Plan Packet')
+    expect((output.message as Record<string, unknown>)['agent']).toBe('plan')
 
     await rm(root, { recursive: true, force: true })
   })

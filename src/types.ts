@@ -1,10 +1,8 @@
 export interface FeatureConfig {
   enabled: boolean
-  output_dir: string
   auto_trigger: boolean
   trigger_mode: FeatureTriggerMode
   generate_prd: boolean
-  prd_output_dir: string
   closure: FeatureClosureConfig
 }
 
@@ -20,7 +18,6 @@ export interface FeatureClosureConfig {
 
 export interface TddConfig {
   enabled: boolean
-  expand_threshold: number
 }
 
 export interface AdapterConfig {
@@ -59,9 +56,9 @@ export type QualityCheckType = 'lint' | 'typecheck' | 'test' | 'format'
 
 export interface ArchiveConfig {
   enabled: boolean
-  output_dir: string
   drift_check?: boolean
   auto_promote_current?: boolean
+  sync_promotion_fallback?: boolean
 }
 
 export interface AcceptanceConfig {
@@ -76,12 +73,25 @@ export interface WritingPlanConfig {
   enabled: boolean
 }
 
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
+export type LogOutput = 'console' | 'file' | 'both'
+export type LogFormat = 'text' | 'json'
+export type LogCategory = 'harden' | 'session' | 'quality_gate' | 'config' | 'drift' | 'orchestrator' | 'feature' | 'archive' | 'default'
+
+export interface LoggingConfig {
+  level: LogLevel
+  output: LogOutput
+  path: string
+  maxFiles: number
+  categories: LogCategory[] | 'all'
+  format: LogFormat
+}
+
 export interface GuardianConfig {
   enabled: boolean
   auto_start: boolean
   auto_fix: boolean
   max_retries: number
-  state_dir: string
   contract_cache: boolean
 }
 
@@ -132,6 +142,8 @@ export interface HardenResult {
   stopReason?: string
   trace?: HardenTraceEntry[]
   acceptedFindingsSummary?: string
+  coordinatorSessionId?: string
+  totalTokensConsumed?: number
 }
 
 export type HardenMode = 'quick' | 'standard' | 'deep'
@@ -141,10 +153,33 @@ export type ComplexityGrade = 'trivial' | 'simple' | 'complex'
 export interface HardenConfig {
   enabled: boolean
   maxRounds: number
-  tokenBudgetPerRound: number
-  tokenBudgetTotal: number
+  maxArgumentRoundsPerFinding: number
   reviewerModel?: string
   executorModel?: string
+}
+
+export type HardenExecutorVerdict = 'accept' | 'reject' | 'partial'
+
+export interface HardenDispositionItem {
+  findingId: string
+  verdict: HardenExecutorVerdict
+  rationale: string
+  fixSummary?: string
+}
+
+export interface HardenRebuttalRecord {
+  reviewerRebuttalSessionId: string
+  challenge: string
+  executorFinalSessionId: string
+  finalVerdict: HardenExecutorVerdict
+}
+
+export interface HardenRoundSessionIds {
+  round: number
+  reviewerSessionId: string
+  executorSessionId: string
+  reviewerRebuttalSessionId?: string
+  executorRebuttalSessionId?: string
 }
 
 export type DriftDisposition = 'auto_repaired' | 'ambiguous_needs_confirmation' | 'violation_needs_fix' | 'no_drift'
@@ -154,7 +189,6 @@ export interface DriftGuardianConfig {
   auto_start: boolean
   auto_fix: boolean
   max_retries: number
-  state_dir: string
   contract_cache: boolean
 }
 
@@ -216,7 +250,29 @@ export interface EvidenceSinkEntry {
   data: unknown
 }
 
+export interface PathsConfig {
+  changes: string
+  archive: string
+  current_requirements: string
+  current_design: string
+  current_spec: string
+  current_workflow: string
+  builds: string
+  plans: string
+  acceptance_state: string
+  feature_state: string
+  change_units: string
+  guardian_state: string
+  boulder_state: string
+  evidence_dir: string
+  implementation_runs: string
+  worktree_dir: string
+}
+
+export type OpenFlowLocale = 'zh-CN' | 'en'
+
 export interface OpenFlowConfig {
+  paths: PathsConfig
   feature: FeatureConfig
   tdd: TddConfig
   verification: VerificationConfig
@@ -225,17 +281,36 @@ export interface OpenFlowConfig {
   writingPlan: WritingPlanConfig
   harden: HardenConfig
   guardian: DriftGuardianConfig
+  logging?: LoggingConfig
   executionQualityPolicy?: ExecutionQualityPolicyConfig
+  locale?: OpenFlowLocale
 }
 
 export const defaultConfig: OpenFlowConfig = {
+  locale: 'zh-CN',
+  paths: {
+    changes: 'docs/changes',
+    archive: 'docs/archive',
+    current_requirements: 'docs/current/requirements',
+    current_design: 'docs/current/design',
+    current_spec: 'docs/current/spec',
+    current_workflow: 'docs/current/workflow',
+    builds: '.sisyphus/builds',
+    plans: '.sisyphus/plans',
+    acceptance_state: '.sisyphus/acceptance.local.md',
+    feature_state: '.sisyphus/feature',
+    change_units: '.sisyphus/change-units.json',
+    guardian_state: '.sisyphus/openflow/guardian',
+    boulder_state: '.sisyphus/boulder.json',
+    evidence_dir: '.sisyphus/evidence',
+    implementation_runs: '.sisyphus/openflow/runs',
+    worktree_dir: '.sisyphus/worktree',
+  },
   feature: {
     enabled: true,
-    output_dir: 'docs/changes',
     auto_trigger: true,
     trigger_mode: 'smart',
     generate_prd: true,
-    prd_output_dir: 'docs/changes',
     closure: {
       enabled: true,
       auto_transition: true,
@@ -246,7 +321,6 @@ export const defaultConfig: OpenFlowConfig = {
   },
   tdd: {
     enabled: true,
-    expand_threshold: 3,
   },
   verification: {
     in_plan: true,
@@ -265,7 +339,6 @@ export const defaultConfig: OpenFlowConfig = {
   },
   archive: {
     enabled: true,
-    output_dir: 'docs/archive',
     drift_check: true,
     auto_promote_current: true,
   },
@@ -273,16 +346,22 @@ export const defaultConfig: OpenFlowConfig = {
   harden: {
     enabled: true,
     maxRounds: 5,
-    tokenBudgetPerRound: 50000,
-    tokenBudgetTotal: 250000,
+    maxArgumentRoundsPerFinding: 2,
   },
   guardian: {
     enabled: true,
     auto_start: true,
     auto_fix: true,
     max_retries: 3,
-    state_dir: '.sisyphus/openflow/guardian',
     contract_cache: true,
+  },
+  logging: {
+    level: 'info',
+    output: 'console',
+    path: '.sisyphus/openflow/logs',
+    maxFiles: 7,
+    categories: 'all',
+    format: 'text',
   },
   executionQualityPolicy: {
     enabled: true,
@@ -365,7 +444,7 @@ export type DevelopmentPhase =
   | 'promotion_pending'
   | 'promoted'
 
-export type VerificationFailureCategory = 'quality' | 'security' | 'consistency'
+export type VerificationFailureCategory = 'quality' | 'security' | 'consistency' | 'compilation'
 
 export type PromotionType = 'ADD' | 'UPDATE' | 'REMOVE'
 
@@ -418,12 +497,16 @@ export interface BehaviorScenarioCheckResult {
   evidenceType?: string
   evidenceReference?: string
   detail?: string
+  coverageLevel?: BehaviorCoverageLevel
+  freshness?: BehaviorFreshness
+  equivalenceRationale?: string
 }
 
 export interface VerifyEvidencePacket {
   checksRun: string[]
   checkResults: VerifyEvidenceCheckResult[]
   behaviorScenarios?: BehaviorScenarioCheckResult[]
+  classifiedEvidenceGaps?: ClassifiedEvidenceGap[]
   observedBehaviorSummary: string
   intendedVsActualDelta: string
   docAlignmentSummary: string
@@ -434,12 +517,21 @@ export interface VerifyEvidencePacket {
 
 export type BehaviorEvidenceStatus = 'verified' | 'missing_evidence' | 'failed' | 'not_applicable'
 
+export type BehaviorCriticality = 'critical' | 'normal' | 'optional'
+export type BehaviorCoverageLevel = 'exact' | 'equivalent' | 'partial' | 'missing' | 'not_applicable'
+export type BehaviorFreshness = 'fresh' | 'stale' | 'unknown'
+
 export interface BehaviorScenarioEvidence {
   scenarioName: string
   status: BehaviorEvidenceStatus
   evidenceType: string
   evidenceReference: string
   reason: string
+  scenarioId?: string
+  criticality?: BehaviorCriticality
+  coverageLevel?: BehaviorCoverageLevel
+  equivalenceRationale?: string
+  freshness?: BehaviorFreshness
 }
 
 export interface VerifyResult {
@@ -517,6 +609,96 @@ export interface IssuePacket {
   noFixNeededReason?: string
   createdAt: string
   updatedAt: string
+  /** Session ID that created this issue. Used for session-scoped blocking. */
+  sessionID?: string
+}
+
+/** Implementation lifecycle states for stateful quality guardrails.
+ *  - clean: no implementation changes since last verify
+ *  - dirty: implementation changes detected, readiness may be stale
+ *  - verified: quality-gate passed with fresh readiness
+ *  - stale: verified but subsequent implementation changes detected
+ *  - blocked: completion/archive blocked until quality-gate re-run
+ */
+export type ImplementationState = 'clean' | 'dirty' | 'verified' | 'stale' | 'blocked'
+
+/** Metadata for implementation state tracking */
+export interface ImplementationStateMetadata {
+  /** Current implementation state */
+  state: ImplementationState
+  /** ISO-8601 timestamp when state was last updated */
+  updatedAt: string
+  /** Files that caused the state transition to dirty/stale */
+  changedFiles?: string[]
+  /** Git HEAD at time of state update */
+  gitHead?: string
+  /** Whether the state transition was from a verify success */
+  fromVerify?: boolean
+}
+
+/** Status of an implementation run */
+export type ImplementationRunStatus =
+  | 'created'
+  | 'starting_backend'
+  | 'running'
+  | 'quality_gate_pending'
+  | 'quality_gate_running'
+  | 'ready_for_archive'
+  | 'archiving'
+  | 'archived'
+  | 'blocked'
+  | 'cancelled'
+
+/** Backend type for implementation execution */
+export type ImplementationBackend = 'omo' | 'opencode'
+
+/** Container mode for implementation run isolation */
+export type ImplementationContainerMode = 'session' | 'worktree'
+
+/** A single implementation run tracking record */
+export interface ImplementationRun {
+  /** Unique run identifier */
+  runID: string
+  /** Feature slug this run belongs to */
+  feature: string
+  /** Session ID that owns this run */
+  sessionID: string
+  /** Message ID that triggered this run */
+  messageID: string
+  /** Agent name executing this run */
+  agent: string
+  /** Working directory for the run */
+  directory: string
+  /** Git worktree path if using worktree isolation */
+  worktree?: string
+  /** Git branch used for the worktree */
+  branch?: string
+  /** Base ref (git HEAD) when the worktree was created */
+  baseRef?: string
+  /** Backend executing the run */
+  backend: ImplementationBackend
+  /** Command used to invoke the backend */
+  backendCommand: string
+  /** Current run status */
+  status: ImplementationRunStatus
+  /** Isolation mode for the run */
+  containerMode: ImplementationContainerMode
+  /** Worktree kind: main worktree or derived worktree */
+  worktreeKind?: 'main' | 'derived'
+  /** Commit policy for this run */
+  commitPolicy?: 'archive'
+  /** Cleanup policy for the worktree */
+  cleanupPolicy?: string
+  /** Whether the main worktree was dirty before isolated execution began */
+  mainWorktreeDirty?: boolean
+  /** ISO-8601 timestamp when run was created */
+  startedAt: string
+  /** ISO-8601 timestamp when run was last updated */
+  updatedAt: string
+  /** Path to run events log */
+  eventsPath: string
+  /** Path to run observations log */
+  observationsPath: string
 }
 
 export interface AcceptanceState {
@@ -558,6 +740,12 @@ export interface AcceptanceState {
   acceptedKnownIssues?: AcceptedKnownIssueSummary[]
   /** Minimal harden terminal summary persisted as JSON */
   hardenSummary?: string
+  /** Quality-gate orchestration applicability metadata; not verify readiness. */
+  qualityGateApplicability?: QualityGateApplicabilityResult
+  /** Marks limited-context technical readiness for later post-hoc issue archive handling. */
+  postHocIssue?: boolean
+  /** Implementation state for stateful quality guardrails */
+  implementationState?: ImplementationStateMetadata
 }
 
 // 按阶段分段的文件变更记录
@@ -611,6 +799,47 @@ export type QualityGateContextKind =
   | 'limited'   // context available but budget-restricted
   | 'none'      // no semantic context available
 
+export type QualityGateApplicabilityStatus =
+  | 'applicable'
+  | 'not_applicable'
+  | 'needs_workflow_stage'
+  | 'limited_context'
+
+export type QualityGateTaskKind =
+  | 'implementation_done'
+  | 'bugfix_done'
+  | 'archive_ready'
+  | 'design_only'
+  | 'planning_only'
+  | 'metadata_only'
+  | 'rename_only'
+  | 'docs_only'
+  | 'unknown'
+
+export interface QualityGateApplicabilityResult {
+  status: QualityGateApplicabilityStatus
+  reasonCode: string
+  reason: string
+  taskKind: QualityGateTaskKind
+  shouldRunVerify: boolean
+  shouldRunHarden: boolean
+  archiveReadinessEligible: boolean
+  nextStep: string
+}
+
+export type EvidenceGapKind =
+  | 'blocking_evidence_gap'
+  | 'workflow_stage_missing'
+  | 'limited_context_gap'
+  | 'informational_gap'
+
+export interface ClassifiedEvidenceGap {
+  code: string
+  kind: EvidenceGapKind
+  message: string
+  nextStep: string
+}
+
 export interface QualityGateResult {
   /** Feature name this quality gate was evaluated for */
   feature: string
@@ -636,6 +865,8 @@ export interface QualityGateResult {
   warnings: string[]
   /** True when context budget was insufficient — NOT a failure signal */
   limitedContext: boolean
+  /** Applicability decision made before harden/verify side effects */
+  applicability?: QualityGateApplicabilityResult
 }
 
 // ── Evidence Freshness Metadata ───────────────────────────────────────────

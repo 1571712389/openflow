@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { resolveChangeUnitDir } from './change-units.js'
-import type { IssueClassification, IssuePacket, IssueWorkflowStatus } from '../types.js'
+import { VerifyReadinessStatus, type AcceptanceState, type IssueClassification, type IssuePacket, type IssueWorkflowStatus } from '../types.js'
 
 export const ISSUE_CLARIFICATION_FILENAME = 'issue-clarification.md'
 export const ISSUE_PACKET_FILENAME = 'issue-packet.json'
@@ -54,12 +54,13 @@ export function issueSlug(rawText: string): string {
 /**
  * Resolve an issue workspace path from a name or raw case text.
  * Derives today's date and combines with slug to produce
- * docs/changes/{YYYY-MM-DD-slug} path.
+ * <changesDir>/{YYYY-MM-DD-slug} path.
  * Does NOT create directories on disk.
  */
 export function resolveIssueWorkspace(
   ctx: { directory: string },
   nameOrCase: string,
+  changesDir = 'docs/changes',
 ): { slug: string; workspacePath: string } {
   const slug = issueSlug(nameOrCase)
   const now = new Date()
@@ -68,7 +69,8 @@ export function resolveIssueWorkspace(
   const day = String(now.getDate()).padStart(2, '0')
   const datePrefix = `${year}-${month}-${day}`
   const workspaceName = `${datePrefix}-${slug}`
-  const workspacePath = `${ctx.directory}${ctx.directory.endsWith('/') || ctx.directory.endsWith('\\') ? '' : '/'}docs/changes/${workspaceName}`
+  const sep = ctx.directory.endsWith('/') || ctx.directory.endsWith('\\') ? '' : '/'
+  const workspacePath = `${ctx.directory}${sep}${changesDir}/${workspaceName}`
 
   return { slug, workspacePath }
 }
@@ -80,11 +82,12 @@ export function buildIssuePacket(input: {
   status?: IssueWorkflowStatus
   classification?: IssueClassification
   now?: string
+  sessionID?: string
 }): IssuePacket {
   const now = input.now ?? new Date().toISOString()
   const classification = input.classification ?? 'cannot_determine'
 
-  return {
+  const packet: IssuePacket = {
     version: 1,
     slug: input.slug,
     symptom: input.symptom || input.slug,
@@ -105,6 +108,12 @@ export function buildIssuePacket(input: {
     createdAt: now,
     updatedAt: now,
   }
+
+  if (input.sessionID !== undefined) {
+    packet.sessionID = input.sessionID
+  }
+
+  return packet
 }
 
 export async function readIssuePacket(workspacePath: string): Promise<IssuePacket | null> {
@@ -135,6 +144,7 @@ export async function readIssuePacket(workspacePath: string): Promise<IssuePacke
     if (parsed.verificationEvidence !== undefined) packet.verificationEvidence = parsed.verificationEvidence
     if (parsed.residualRisk !== undefined) packet.residualRisk = parsed.residualRisk
     if (parsed.noFixNeededReason !== undefined) packet.noFixNeededReason = parsed.noFixNeededReason
+    if (parsed.sessionID !== undefined) packet.sessionID = parsed.sessionID
     return packet
   } catch {
     return null
@@ -175,6 +185,32 @@ export async function detectMode(
   if (designExists && clarificationExists) return 'mixed'
   if (clarificationExists) return 'issue'
   return 'feature'
+}
+
+export async function detectPostHocIssueMode(
+  ctx: { directory: string },
+  feature: string,
+  acceptanceState: AcceptanceState | null,
+): Promise<boolean> {
+  if (!acceptanceState) return false
+
+  const hasPostHocMarker = acceptanceState.postHocIssue === true
+    || acceptanceState.qualityGateApplicability?.status === 'limited_context'
+  if (!hasPostHocMarker) return false
+
+  const isReady = acceptanceState.readiness === VerifyReadinessStatus.Ready
+    || acceptanceState.readiness === VerifyReadinessStatus.ReadyWithDocUpdates
+  if (!isReady) return false
+
+  const changeDir = await resolveChangeUnitDir(ctx.directory, feature)
+  const basePath = `${ctx.directory}${ctx.directory.endsWith('/') || ctx.directory.endsWith('\\') ? '' : '/'}`
+  const workspacePath = `${basePath}docs/changes/${changeDir}`
+
+  const designExists = await pathExists(path.join(workspacePath, 'design.md'))
+  if (designExists) return false
+
+  const clarificationExists = await pathExists(path.join(workspacePath, ISSUE_CLARIFICATION_FILENAME))
+  return !clarificationExists
 }
 
 async function pathExists(filePath: string): Promise<boolean> {

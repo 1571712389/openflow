@@ -1,4 +1,5 @@
 import type { RequirementModel } from './requirement-model.js'
+import { t, tArray } from '../../i18n/index.js'
 
 const NOT_SPECIFIED = 'Not specified.'
 
@@ -11,6 +12,7 @@ export function renderDesignDocument(model: RequirementModel): string {
     renderIdentity(model),
     renderOverview(model),
     renderProblem(model),
+    renderFrontendAsciiPreview(model),
     renderGoals(model),
     renderNonGoals(model),
     renderBehaviorAlignment(model),
@@ -28,7 +30,7 @@ function renderDraftNotice(model: RequirementModel): string {
     return ''
   }
 
-  return ['> **Draft with Assumptions / 带假设的草稿**', '', 'This document contains assumptions that must not be treated as confirmed implementation constraints.'].join('\n')
+  return [`> **${t('templates.draftWarning.title')}**`, '', 'This document contains assumptions that must not be treated as confirmed implementation constraints.'].join('\n')
 }
 
 function renderConsensusSummary(model: RequirementModel): string {
@@ -94,6 +96,42 @@ function renderOverview(model: RequirementModel): string {
 
 function renderProblem(model: RequirementModel): string {
   return ['## Problem', '', escapeParagraph(model.problemStatement)].join('\n')
+}
+
+function renderFrontendAsciiPreview(model: RequirementModel): string {
+  if (!isFrontendRequirement(model)) {
+    return ''
+  }
+
+  const primaryGoal = firstMeaningful(model.goals) ?? firstMeaningful(model.acceptanceCriteria.map((criterion) => criterion.description)) ?? 'User completes the primary interaction'
+  const primaryInteraction = firstMeaningful(model.acceptanceCriteria.map((criterion) => criterion.description)) ?? primaryGoal
+  const scope = firstMeaningful(model.scopeBoundary.inScope) ?? 'Primary page or component'
+
+  return [
+    '## UI / Interaction ASCII Preview',
+    '',
+    'This feature appears to affect a user-facing frontend. Use this preview to confirm the intended page structure and interaction path before implementation.',
+    '',
+    '```text',
+    '+------------------------------------------------------------+',
+    `| ${padAscii('Page / View: ' + scope, 58)} |`,
+    '+------------------------------------------------------------+',
+    '| Header / Navigation                                        |',
+    '+------------------------------------------------------------+',
+    '| Main content                                                |',
+    `|   Goal: ${padAscii(primaryGoal, 50)} |`,
+    '|                                                            |',
+    '|   [ Primary action ]        [ Secondary / cancel ]          |',
+    '+------------------------------------------------------------+',
+    '| Feedback / validation / empty-or-loading state              |',
+    '+------------------------------------------------------------+',
+    '',
+    'Interaction flow:',
+    `1. User opens the page/component for: ${toAsciiLine(scope)}`,
+    `2. User performs: ${toAsciiLine(primaryInteraction)}`,
+    '3. UI updates visible state and shows success, validation, or recovery feedback.',
+    '```',
+  ].join('\n')
 }
 
 function renderGoals(model: RequirementModel): string {
@@ -192,6 +230,63 @@ function renderBulletSection(heading: string, items: string[]): string {
   }
 
   return lines.join('\n')
+}
+
+function isFrontendRequirement(model: RequirementModel): boolean {
+  const haystack = [
+    model.feature,
+    model.featureTitle,
+    model.sourceIntent,
+    model.problemStatement,
+    model.targetUsers,
+    ...model.goals,
+    ...model.scopeBoundary.inScope,
+    ...(model.scopeBoundary.touchedModules ?? []),
+    ...model.acceptanceCriteria.map((criterion) => criterion.description),
+    ...model.constraints.map((constraint) => constraint.description),
+    ...(model.expectedModules ?? []).map((module) => `${module.path} ${module.purpose}`),
+  ].filter(Boolean).join(' ').toLowerCase()
+
+  if (hasFrontendNegation(haystack)) {
+    return false
+  }
+
+  const frontendKeywords = tArray('design.frontendKeywords')
+
+  return /\b(frontend|front-end|ui|ux|page|screen|react|vue|svelte|css|html|form|modal|button|sidebar|navbar|dashboard)\b/.test(haystack)
+    || new RegExp(frontendKeywords.join('|')).test(haystack)
+}
+
+function hasFrontendNegation(value: string): boolean {
+  const frontendKeywords = tArray('design.frontendKeywords')
+  const negationKeywords = tArray('design.frontendNegationKeywords')
+  const negativeVerbKeywords = negationKeywords.filter(keyword => /^不(?:涉及|修改|变更|影响|包含)$/u.test(keyword))
+  const noNeedKeywords = negationKeywords.filter(keyword => keyword === '无需')
+  const trailingNegationKeywords = negationKeywords.filter(keyword => /^(?:不受影响|不变|排除|不在范围)$/u.test(keyword))
+  const frontendPattern = frontendKeywords.join('|')
+
+  return /\b(no|without|not|exclude|avoid|skip)\s+(frontend|front-end|ui|ux|page|screen|react|vue|svelte|css|html|form|modal|button|sidebar|navbar|dashboard)\b/.test(value)
+    || /\b(frontend|front-end|ui|ux|page|screen|react|vue|svelte|css|html|form|modal|button|sidebar|navbar|dashboard)\b.{0,24}\b(not affected|unchanged|out of scope|not impacted)\b/.test(value)
+    || new RegExp(`${negativeVerbKeywords.join('|')}.{0,12}(${frontendPattern})|${noNeedKeywords.join('|')}.{0,12}(${frontendPattern})|(${frontendPattern}).{0,12}(${trailingNegationKeywords.join('|')})`).test(value)
+}
+
+function firstMeaningful(items: string[]): string | undefined {
+  return items.find((item) => item.trim().length > 0)
+}
+
+function padAscii(value: string, width: number): string {
+  const normalized = toAsciiLine(value)
+  if (normalized.length >= width) {
+    return normalized.slice(0, width - 3) + '...'
+  }
+
+  return normalized.padEnd(width, ' ')
+}
+
+function toAsciiLine(value: string): string {
+  return normalizeWhitespace(value)
+    .replace(/\|/g, '/')
+    .replace(/[\r\n]+/g, ' ')
 }
 
 function escapeParagraph(value: string | undefined): string {

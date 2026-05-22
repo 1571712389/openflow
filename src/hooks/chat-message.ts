@@ -18,10 +18,12 @@ import {
 } from './feature-workflow.js'
 import { getContractRuntime } from '../contracts/runtime.js'
 import { dispatchOpenFlowCommand, extractOpenFlowCommand } from './chat-command-dispatch.js'
-import { findActiveIssueWorkspace } from './issue-workspace.js'
+import { getImplementationState, isFreshReadiness } from '../utils/acceptance-state.js'
+import { tArray } from '../i18n/index.js'
 
-const COMPLETION_PHRASES = ['完成了', '好了', '可以收尾', 'done', 'finished', 'ready to archive']
-const ISSUE_ACTIVE_NOTICE_TITLE = '## OpenFlow: Issue Investigation Active'
+const COMPLETION_PHRASES = tArray('signals.completion.phrases')
+const GUARD_BLOCK_TITLE = '## OpenFlow: Completion Blocked Until Quality Gate'
+const GUARD_VERIFY_TITLE = '## OpenFlow: Verification Suggested'
 
 function isCompletionMessage(message: string): boolean {
   const lower = message.toLowerCase()
@@ -35,34 +37,18 @@ export function createChatMessageHook(ctx: OpenFlowContext) {
     const rawInput = input as Record<string, unknown>
     const rawOutput = output as unknown as Record<string, unknown>
     const role = getMessageRole(rawOutput)
-    if (role && role !== 'user') return
+    // System-role messages are never processed by the hook
+    if (role === 'system') return
 
     const message = extractMessageText(rawOutput)
     if (!message) return
     if (looksLikeInternalMessage(message)) return
+    // Guard recursion: don't re-trigger on OpenFlow's own guard messages
+    if (message.includes(GUARD_BLOCK_TITLE) || message.includes(GUARD_VERIFY_TITLE)) return
 
     if (await dispatchOpenFlowCommand(ctx, input, output, message)) return
 
-    const activeIssueWorkspace = await findActiveIssueWorkspace(ctx.directory)
-    if (activeIssueWorkspace) {
-      if (!hasNotice(output, ISSUE_ACTIVE_NOTICE_TITLE)) {
-        appendGuardMessage(output, `${ISSUE_ACTIVE_NOTICE_TITLE}
-
-Active issue workspace detected: \`${activeIssueWorkspace.workspacePath}\`.
-
-Feature-design and feature-harden suggestions are suppressed while issue context is active.
-
-Recommended issue flow:
-- Continue gathering evidence with \`/openflow-issue <problem> --continue\`
-- If the fix is already complete, record it with \`/openflow-issue <problem> --resolve\`
-- Then invoke the \`openflow-quality-gate\` skill to verify readiness`)
-      }
-      return
-    }
-
-    await acceptanceHook({ sessionID: input.sessionID, message })
-
-    // Dispatch session events to Guardian
+    // ── Guardian session events (before completion guard, non-blocking) ─
     if (ctx.config.guardian?.enabled) {
       try {
         const runtime = getContractRuntime()
@@ -74,6 +60,15 @@ Recommended issue flow:
       }
     }
 
+    // ── Completion Guard (runs for BOTH user and assistant) ───────────
+    if (ctx.config.verification.completion_prompt && isCompletionMessage(message)) {
+      const guardAppended = await appendCompletionGuardIfNeeded(ctx, output, message)
+      if (guardAppended) return
+    }
+
+    // ── Acceptance detection (runs even when feature phase is disabled) ─
+    await acceptanceHook({ sessionID: input.sessionID, message })
+
     if (!ctx.config.feature.enabled) {
       return
     }
@@ -84,7 +79,7 @@ Recommended issue flow:
         return
       }
 
-      const activeSession = await loadActiveFeatureSession(ctx.directory, activeFeature)
+      const activeSession = await loadActiveFeatureSession(ctx.directory, activeFeature, ctx.config.paths.feature_state)
       if (!activeSession || !isAwaitingFormalAnswer(activeSession)) {
         return
       }
@@ -113,17 +108,7 @@ Recommended issue flow:
       }
     }
 
-    if (ctx.config.verification.completion_prompt && isCompletionMessage(message)) {
-      appendGuardMessage(output, `## OpenFlow: Verification Suggested
-
-The task appears to be in completion state.
-
-Recommended next action before archive:
-- View verification checklist
-- Run verification now
-- Skip for now (known risk)
-
-OpenFlow keeps this prompt non-blocking.`)
+    if (shouldSuppressFeatureSuggestionForActiveDesignFlow(rawInput, rawOutput, message)) {
       return
     }
 
@@ -155,20 +140,72 @@ Generation policy:
 
 		appendGuardMessage(output, `## OpenFlow: Feature Design Suggested
 
-This request looks like it may need OpenFlow design docs before implementation.
+This request may benefit from OpenFlow feature design docs before implementation.
 
-Recommended next step before implementation:
+Suggested user action:
 
-\`\`\`
+\`\`\`text
 /openflow-feature
 \`\`\`
 
-Run it in the same session and continue in natural language; OpenFlow will derive the internal feature name.
+To create formal design docs, manually run "/openflow-feature" in this same session and continue in natural language. OpenFlow will derive the internal feature name from context.
 
-OpenFlow only suggests this step. It does not block research, reading, or implementation tools.`)
+This is advisory only: it does not block research, reading, or implementation tools, and the assistant must not invoke "/openflow-feature" automatically unless the user explicitly requests it.`)
   }
 
   return hook
+}
+
+/**
+ * Append a completion guard to the output when the message contains
+ * completion semantics and implementation state is dirty/stale/blocked.
+ *
+ * Returns true when a guard was appended (caller should return early).
+ * Returns false when no guard was needed (caller should continue).
+ *
+ * Guards are applied for BOTH user and assistant messages.
+ * OpenFlow's own guard messages are detected and skipped (recursion guard).
+ */
+async function appendCompletionGuardIfNeeded(
+  ctx: OpenFlowContext,
+  output: Record<string, unknown>,
+  message: string,
+): Promise<boolean> {
+  if (!ctx.config.verification.completion_prompt || !isCompletionMessage(message)) {
+    return false
+  }
+
+  // Don't append if output already has a guard (duplicate prevention)
+  if (hasNotice(output, GUARD_BLOCK_TITLE) || hasNotice(output, GUARD_VERIFY_TITLE)) {
+    return false
+  }
+
+  const implementationState = await getImplementationState(ctx.directory)
+  const hasFreshReadiness = implementationState ? await isFreshReadiness(ctx.directory) : false
+
+  if (implementationState && !hasFreshReadiness && ['dirty', 'stale', 'blocked'].includes(implementationState.state)) {
+    appendGuardMessage(output, `## OpenFlow: Completion Blocked Until Quality Gate
+
+The task appears to be in completion state, but the current implementation state is \`${implementationState.state}\`.
+
+Required next action before claiming completion:
+- Run \`openflow-quality-gate\`
+- Resolve the reported readiness issues
+- Re-check completion after the quality gate is clean`)
+    return true
+  }
+
+  appendGuardMessage(output, `## OpenFlow: Verification Suggested
+
+The task appears to be in completion state.
+
+Recommended next action before archive:
+- View verification checklist
+- Run verification now
+- Skip for now (known risk)
+
+OpenFlow keeps this prompt non-blocking.`)
+  return true
 }
 
 function looksLikeDirectCommand(message: string): boolean {
@@ -207,14 +244,47 @@ function looksLikePostFeatureAction(message: string, feature: string): boolean {
   return /(实现|开始做|开始开发|编码|落地|archive|归档|verify|验证|start-work|ulw-loop|implement|build|code)/i.test(message)
 }
 
-async function loadActiveFeatureSession(directory: string, feature: string) {
+function shouldSuppressFeatureSuggestionForActiveDesignFlow(
+  input: Record<string, unknown>,
+  output: Record<string, unknown>,
+  message: string,
+): boolean {
+  const signalText = [
+    message,
+    readString(input, ['agent']),
+    readString(output, ['agent']),
+    readString(input, ['message', 'agent']),
+    readString(output, ['message', 'agent']),
+    readString(input, ['metadata', 'agent']),
+    readString(output, ['metadata', 'agent']),
+    readString(output, ['message', 'metadata', 'agent']),
+    readString(output, ['message', 'metadata', 'skill']),
+    readString(output, ['message', 'metadata', 'command']),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join('\n')
+
+  return /(?:prometheus|plan builder|openflow-brainstorm|brainstorm|openflow-writing-plan|writing[-\s]?plan)/iu.test(signalText)
+    || /(?:\.sisyphus[\\/](?:drafts|plans)|规划草稿|执行计划|实现计划|开发计划|planning draft|development plan)/iu.test(signalText)
+    || /OpenFlow command:\s*\/openflow-(?:issue|feature|writing-plan)\b/iu.test(signalText)
+}
+
+function readString(source: Record<string, unknown>, path: string[]): string | undefined {
+  let current: unknown = source
+  for (const key of path) {
+    if (!current || typeof current !== 'object') return undefined
+    current = (current as Record<string, unknown>)[key]
+  }
+
+  return typeof current === 'string' ? current : undefined
+}
+
+async function loadActiveFeatureSession(directory: string, feature: string, featureStateDir = '.sisyphus/feature') {
   try {
-    const filePath = path.join(directory, '.sisyphus', 'feature', `${feature}.json`)
+    const filePath = path.join(directory, featureStateDir, `${feature}.json`)
     const content = await fs.readFile(filePath, 'utf-8')
     return normalizeFeatureSession(feature, JSON.parse(content) as unknown)
   } catch {
     return undefined
   }
 }
-
-
